@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<div id="scrim"></div>
 <div id="app">
   <aside id="sidebar">
     <div class="logo">
@@ -42,11 +43,12 @@
 
   <main id="main">
     <header id="topbar">
+      <button id="menu-btn" title="Menu">&#9776;</button>
       <div class="nav-arrows">
         <button id="back" title="Go back">&#8249;</button>
         <button id="fwd" title="Go forward">&#8250;</button>
       </div>
-      <input id="search-input" placeholder="What do you want to listen to?" autocomplete="off" hidden>
+      <input id="search-input" placeholder="Search all music — Spotify, YouTube, Audius, Archive…" autocomplete="off">
       <div class="spacer"></div>
       <button id="upload-btn">Add music</button>
       <input type="file" id="file-input" accept="audio/*" multiple hidden>

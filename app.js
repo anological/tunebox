@@ -304,7 +304,7 @@ function trackTable(ids) {
     <tbody>${ids.map((id, i) => { const t = trackById(id); return t ? trackRow(t, i) : ''; }).join('')}</tbody></table>`;
 }
 
-function renderHome() {
+async function renderHome() {
   const hour = new Date().getHours();
   const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const quick = [...playlists].slice(0, 6);
@@ -323,9 +323,28 @@ function renderHome() {
       </button>`).join('')}</div>
     <div class="section-title">Made for you</div>
     <div class="card-grid">${cards}</div>
+    <div id="home-yt"><div class="uni-hint">Loading YouTube trending…</div></div>
     <div class="section-title">All tracks</div>
     ${trackTable(library.map(t => t.id))}`;
   bindCards(); bindTrackRows(library.map(t => t.id));
+  // YouTube trending (fails silently — home must never break)
+  try {
+    const trends = await ytTrending();
+    const box = $('#home-yt');
+    if (!box) return;
+    if (!trends.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="section-title">Trending on YouTube</div><div class="trend-row">` +
+      trends.map(v => `
+        <button class="trend-card" data-vid="${v.id}" data-title="${esc(v.title)}" data-channel="${esc(v.channel)}">
+          ${v.thumb ? `<img src="${esc(v.thumb)}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), '')}
+          <div class="t-title">${esc(v.title)}</div>
+          <div class="t-artist">${esc(v.channel)}${v.dur ? ' • ' + fmt(v.dur) : ''}</div>
+        </button>`).join('') + `</div>`;
+    box.querySelectorAll('.trend-card').forEach(b => b.addEventListener('click', () => {
+      ytPendingPlay = { id: b.dataset.vid, title: b.dataset.title, channel: b.dataset.channel };
+      freeSource = 'youtube'; go('free');
+    }));
+  } catch (e) { const box = $('#home-yt'); if (box) box.innerHTML = ''; }
 }
 function bindCards() {
   document.querySelectorAll('[data-pl]').forEach(c => c.addEventListener('click', e => {
@@ -340,32 +359,132 @@ function bindCards() {
   }));
 }
 
-function renderSearch(q) {
-  const query = (q || '').trim().toLowerCase();
-  let html = '';
+/* ---------------- Unified search: your library + Spotify + YouTube + Audius + Archive ---------------- */
+let uniSeq = 0;
+async function renderSearch(q) {
+  const query = (q || '').trim();
+  const seq = ++uniSeq;
+  const alive = () => seq === uniSeq && currentView.name === 'search';
   if (!query) {
-    html = `<div class="greeting">Browse all</div><div class="cat-grid">${CATEGORIES.map(c => `
+    $('#view').innerHTML = `<div class="greeting">Browse all</div><div class="cat-grid">${CATEGORIES.map(c => `
       <button class="cat-card" data-q="${c.q}" style="background:linear-gradient(135deg,hsl(${c.hue},65%,42%),hsl(${(c.hue+40)%360},70%,26%))">${c.name}</button>`).join('')}</div>`;
-  } else {
-    const hits = library.filter(t => (t.title + ' ' + t.artist + ' ' + (t.album || '')).toLowerCase().includes(query)).map(t => t.id);
-    const plHits = playlists.filter(p => p.name.toLowerCase().includes(query));
-    html = `<div class="section-title">Results for "${esc(q)}"</div>`;
+    document.querySelectorAll('[data-q]').forEach(b => b.addEventListener('click', () => {
+      $('#search-input').value = b.dataset.q;
+      currentView.arg = b.dataset.q; history[hIndex].arg = b.dataset.q; renderSearch(b.dataset.q);
+    }));
+    return;
+  }
+  const ql = query.toLowerCase();
+  const hits = library.filter(t => (t.title + ' ' + t.artist + ' ' + (t.album || '')).toLowerCase().includes(ql)).map(t => t.id);
+  const plHits = playlists.filter(p => p.name.toLowerCase().includes(ql));
+  let html = `<div class="section-title">Results for &ldquo;${esc(query)}&rdquo;</div>`;
+  if (plHits.length || hits.length) {
+    html += `<div class="uni-sec"><div class="section-title" style="font-size:17px">Your library</div>`;
     if (plHits.length) html += `<div class="card-grid">${plHits.map(p => `
       <button class="card" data-pl="${p.id}">
         <div class="c-cover" style="background:linear-gradient(135deg,hsl(${p.hue},70%,45%),hsl(${(p.hue+50)%360},75%,28%))"></div>
         <div class="c-title">${esc(p.name)}</div><div class="c-sub">${p.trackIds.length} songs</div>
       </button>`).join('')}</div>`;
-    html += trackTable(hits);
-    if (!hits.length && !plHits.length) html = `<div class="empty">No results for "${esc(q)}". Try something else.</div>`;
+    if (hits.length) html += trackTable(hits);
+    html += `</div>`;
   }
+  html += `<div id="uni-sp"></div><div id="uni-yt"></div><div id="uni-au"></div><div id="uni-ia"></div>
+    <div id="uni-empty" class="empty" hidden>No results for &ldquo;${esc(query)}&rdquo; anywhere. Try something else.</div>`;
   $('#view').innerHTML = html;
-  document.querySelectorAll('[data-q]').forEach(b => b.addEventListener('click', () => {
-    $('#search-input').value = b.dataset.q;
-    go('search', b.dataset.q);
-  }));
-  bindCards();
-  const ids = library.filter(t => (t.title + ' ' + t.artist + ' ' + (t.album || '')).toLowerCase().includes(query)).map(t => t.id);
-  bindTrackRows(ids);
+  bindCards(); bindTrackRows(hits);
+  const spBox = $('#uni-sp'), ytBox = $('#uni-yt'), auBox = $('#uni-au'), iaBox = $('#uni-ia');
+  let finished = 0;
+  const finish = () => {
+    if (!alive() || ++finished < 4) return;
+    if (!$('#view').querySelector('.uni-sec')) $('#uni-empty').hidden = false;
+  };
+  // Spotify (only when connected)
+  (async () => {
+    if (!hasTokens()) {
+      spBox.innerHTML = `<div class="uni-hint">Spotify isn't connected — <a id="uni-sp-go">connect Spotify</a> to search it here too.</div>`;
+      const g = $('#uni-sp-go'); if (g) g.addEventListener('click', () => go('spotify'));
+      finish(); return;
+    }
+    spBox.innerHTML = `<div class="uni-hint">Searching Spotify…</div>`;
+    try {
+      const data = await spApi('/v1/search?' + new URLSearchParams({ q: query, type: 'track', limit: '8' }));
+      if (!alive()) return;
+      const tracks = (data.tracks?.items || []).filter(t => t?.uri);
+      const ids = tracks.map(t => spTrack(t).id);
+      if (ids.length) {
+        spBox.innerHTML = `<div class="section-title" style="font-size:17px">Spotify</div><div class="uni-sec">` + trackTable(ids) + `</div>`;
+        bindTrackRows(ids);
+      } else spBox.innerHTML = '';
+    } catch (e) { if (alive()) spBox.innerHTML = ''; }
+    finish();
+  })();
+  // YouTube (extra debounce — each search costs API quota)
+  (async () => {
+    const key = ytKey();
+    if (!key) { ytBox.innerHTML = ''; finish(); return; }
+    ytBox.innerHTML = `<div class="uni-hint">Searching YouTube…</div>`;
+    await new Promise(r => setTimeout(r, 700));
+    if (!alive()) return;
+    try {
+      const sp = new URLSearchParams({ part: 'snippet', type: 'video', videoCategoryId: '10', maxResults: '8', q: query, key });
+      const res = await fetch('https://www.googleapis.com/youtube/v3/search?' + sp.toString());
+      if (!res.ok) throw new Error('YouTube error ' + res.status);
+      const json = await res.json();
+      const items = (json.items || []).filter(i => i.id && i.id.videoId);
+      if (!alive()) return;
+      if (items.length) {
+        ytBox.innerHTML = `<div class="section-title" style="font-size:17px">YouTube</div><div class="uni-sec">
+          <div id="uni-yt-player"></div><div class="yt-list">` +
+          items.map(i => {
+            const vid = i.id.videoId, sn = i.snippet || {};
+            const th = sn.thumbnails && (sn.thumbnails.medium || sn.thumbnails.default);
+            return `<div class="yt-item" data-vid="${vid}" data-title="${esc(sn.title || 'YouTube video')}" data-channel="${esc(sn.channelTitle || '')}">` +
+              (th ? `<img class="yt-thumb" src="${esc(th.url)}" alt="" loading="lazy">` : posterImg(sn.title, hueFor(vid), 'yt-thumb')) +
+              `<div class="yt-meta"><div class="t-title">${esc(sn.title || 'YouTube video')}</div><div class="t-artist">${esc(sn.channelTitle || '')}</div></div></div>`;
+          }).join('') + `</div></div>`;
+        ytBox.querySelectorAll('.yt-item').forEach(el => el.addEventListener('click', () =>
+          ytShowPlayer(el.dataset.vid, el.dataset.title, el.dataset.channel, 'uni-yt-player')));
+      } else ytBox.innerHTML = '';
+    } catch (e) { if (alive()) ytBox.innerHTML = ''; }
+    finish();
+  })();
+  // Audius (free music, no account)
+  (async () => {
+    auBox.innerHTML = `<div class="uni-hint">Searching Audius…</div>`;
+    try {
+      const items = await auApi('/tracks/search?query=' + encodeURIComponent(query) + '&limit=15');
+      if (!alive()) return;
+      const ids = items.filter(t => t && t.id && t.is_streamable !== false).map(t => auTrack(t).id);
+      if (ids.length) {
+        auBox.innerHTML = `<div class="section-title" style="font-size:17px">Audius — free music</div><div class="uni-sec">` + trackTable(ids) + `</div>`;
+        bindTrackRows(ids);
+      } else auBox.innerHTML = '';
+    } catch (e) { if (alive()) auBox.innerHTML = ''; }
+    finish();
+  })();
+  // Internet Archive (collections)
+  (async () => {
+    iaBox.innerHTML = `<div class="uni-hint">Searching the Internet Archive…</div>`;
+    try {
+      const docs = await iaSearch(query);
+      if (!alive()) return;
+      const top = docs.slice(0, 6);
+      if (top.length) {
+        iaBox.innerHTML = `<div class="section-title" style="font-size:17px">Internet Archive</div><div class="uni-sec"><div class="card-grid">` +
+          top.map(d => {
+            const poster = posterURL(d.title || d.identifier, hueFor(d.identifier));
+            return `<button class="card" data-iaid="${esc(d.identifier)}">
+              <img class="c-cover" src="https://archive.org/services/img/${esc(d.identifier)}" alt="" loading="lazy" onerror="this.onerror=null;this.src='${poster}'">
+              <div class="c-title">${esc(d.title || d.identifier)}</div>
+              <div class="c-sub">${esc(d.creator || '')}${d.year ? ' • ' + esc(d.year) : ''}</div></button>`;
+          }).join('') + `</div></div>`;
+        iaBox.querySelectorAll('[data-iaid]').forEach(b => b.addEventListener('click', () => {
+          iaItemId = b.dataset.iaid; freeSource = 'archive'; go('free');
+        }));
+      } else iaBox.innerHTML = '';
+    } catch (e) { if (alive()) iaBox.innerHTML = ''; }
+    finish();
+  })();
 }
 
 function renderPlaylist(id) {
@@ -403,7 +522,7 @@ function go(name, arg) {
   history.push({ name, arg }); hIndex++;
   currentView = { name, arg };
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === name));
-  $('#search-input').hidden = name !== 'search';
+  document.body.classList.remove('nav-open');
   if (name === 'search' && arg) $('#search-input').value = arg;
   rerender();
 }
@@ -412,7 +531,6 @@ function navHist(d) {
   if (n < 0 || n >= history.length) return;
   hIndex = n; currentView = history[n];
   document.querySelectorAll('.nav-item').forEach(x => x.classList.toggle('active', x.dataset.view === currentView.name));
-  $('#search-input').hidden = currentView.name !== 'search';
   rerender();
 }
 
@@ -495,8 +613,15 @@ async function init() {
   let searchTimer;
   $('#search-input').addEventListener('input', e => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => go('search', e.target.value), 250);
+    searchTimer = setTimeout(() => {
+      const v = e.target.value;
+      if (currentView.name === 'search') {
+        currentView.arg = v; history[hIndex].arg = v; renderSearch(v);
+      } else go('search', v);
+    }, 300);
   });
+  $('#menu-btn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
+  $('#scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
   document.addEventListener('keydown', e => {
     if (e.code === 'Space' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); togglePlay(); }
   });
@@ -1108,14 +1233,11 @@ async function renderFreeAudius() {
       <button class="ghost-btn au-genre ${!auGenre ? 'on' : ''}" data-g="">All</button>
       ${AU_GENRES.map(g => `<button class="ghost-btn au-genre ${auGenre === g ? 'on' : ''}" data-g="${esc(g)}">${esc(g)}</button>`).join('')}
     </div>
-    <input id="au-search" class="sp-input" placeholder="Search free music…" value="${esc(auQuery)}" autocomplete="off" style="margin-bottom:16px;max-width:420px">
+    <div class="uni-hint">Tip: the search bar at the top searches Audius along with Spotify, YouTube and the Archive.</div>
     <div id="au-content"><div class="empty">Loading…</div></div>`;
   document.querySelectorAll('.au-genre').forEach(b => b.addEventListener('click', () => {
-    auGenre = b.dataset.g; auQuery = ''; renderFree();
+    auGenre = b.dataset.g; renderFree();
   }));
-  const inp = $('#au-search');
-  let timer;
-  inp.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { auQuery = inp.value; loadAuTracks(); }, 450); });
   await loadAuTracks();
 }
 
@@ -1226,11 +1348,8 @@ async function iaLoadItem(id) {
 async function renderFreeArchive() {
   if (iaItemId) { await renderIaDetail(); return; }
   $('#free-body').innerHTML = `
-    <input id="ia-search" class="sp-input" placeholder="Search the Archive: artists, concerts, old radio…" value="${esc(iaQuery)}" autocomplete="off" style="margin-bottom:16px;max-width:420px">
+    <div class="uni-hint">Tip: the search bar at the top searches the Archive along with Spotify, YouTube and Audius.</div>
     <div id="ia-content"><div class="empty">Loading…</div></div>`;
-  const inp = $('#ia-search');
-  let timer;
-  inp.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { iaQuery = inp.value; loadIaResults(); }, 500); });
   await loadIaResults();
 }
 
@@ -1323,7 +1442,7 @@ function renderFreeYouTube() {
       ${key ? '<button id="yt-key-clear" class="ghost-btn">Clear</button>' : ''}
     </div>
     <p class="yt-hint">A free YouTube API key comes pre-installed, so search works right away. You can replace it with your own key anytime — your own key stays in this browser only.</p>
-    <input id="yt-search" class="sp-input" placeholder="Search YouTube music…" value="${esc(ytQuery)}" autocomplete="off" style="margin:14px 0;max-width:420px"${key ? '' : ' disabled'}>
+    <div class="uni-hint" style="margin:14px 0 4px">Tip: use the search bar at the top — it searches YouTube, Spotify, Audius and the Archive all at once.</div>
     <div class="yt-keyrow" style="margin-bottom:16px;max-width:520px">
       <input id="yt-link" class="sp-input" placeholder="Or paste a YouTube link / video ID…" autocomplete="off">
       <button id="yt-link-play" class="ghost-btn">Play</button>
@@ -1347,15 +1466,17 @@ function renderFreeYouTube() {
   $('#yt-link-play').addEventListener('click', playLink);
   $('#yt-link').addEventListener('keydown', e => { if (e.key === 'Enter') playLink(); });
 
-  if (ytKey()) {
-    const inp = $('#yt-search');
-    let timer;
-    inp.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { ytQuery = inp.value; ytDoSearch(); }, 600); });
+  if (ytPendingPlay) {
+    const p = ytPendingPlay; ytPendingPlay = null;
+    $('#yt-content').innerHTML = '';
+    ytShowPlayer(p.id, p.title, p.channel);
   }
 }
 
-function ytShowPlayer(id, title, channel) {
-  $('#yt-player').innerHTML = `
+function ytShowPlayer(id, title, channel, target) {
+  const host = document.getElementById(target || 'yt-player');
+  if (!host) return;
+  host.innerHTML = `
     <div class="yt-player-wrap">
       <iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0" title="${esc(title)}"
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -1365,45 +1486,23 @@ function ytShowPlayer(id, title, channel) {
   document.querySelectorAll('.yt-item').forEach(el => el.classList.toggle('playing', el.dataset.vid === id));
 }
 
-async function ytDoSearch() {
-  const box = $('#yt-content');
-  if (!box) return;
-  const q = ytQuery.trim();
-  if (!q) { box.innerHTML = '<div class="empty">Search for music videos above.</div>'; return; }
+/* Trending music videos on YouTube for the home page (cached per session, 1 API unit) */
+let ytTrendCache = null, ytPendingPlay = null;
+async function ytTrending() {
+  if (ytTrendCache) return ytTrendCache;
   const key = ytKey();
-  if (!key) { box.innerHTML = '<div class="sp-notice err">Add your YouTube API key above to search, or paste a link to play it directly.</div>'; return; }
-  box.innerHTML = '<div class="empty">Searching YouTube…</div>';
-  try {
-    const sp = new URLSearchParams({ part: 'snippet', type: 'video', videoCategoryId: '10', maxResults: '25', q, key });
-    const res = await fetch('https://www.googleapis.com/youtube/v3/search?' + sp.toString());
-    if (res.status === 400 || res.status === 403) throw new Error('YouTube rejected the request — check that your API key is valid and YouTube Data API v3 is enabled.');
-    if (!res.ok) throw new Error('YouTube error (' + res.status + ')');
-    const json = await res.json();
-    const items = (json.items || []).filter(i => i.id && i.id.videoId);
-    if (!items.length) { box.innerHTML = '<div class="empty">No videos found — try another search.</div>'; return; }
-    const ids = items.map(i => i.id.videoId).join(',');
-    const durs = {};
-    try {
-      const vres = await fetch('https://www.googleapis.com/youtube/v3/videos?' + new URLSearchParams({ part: 'contentDetails', id: ids, key }).toString());
-      if (vres.ok) {
-        const vj = await vres.json();
-        (vj.items || []).forEach(v => { durs[v.id] = ytIsoSecs(v.contentDetails && v.contentDetails.duration); });
-      }
-    } catch (e) { /* durations are optional */ }
-    box.innerHTML = '<div class="section-title">Results for &ldquo;' + esc(q) + '&rdquo;</div><div class="yt-list">' +
-      items.map(i => {
-        const vid = i.id.videoId;
-        const sn = i.snippet || {};
-        const th = sn.thumbnails && (sn.thumbnails.medium || sn.thumbnails.default);
-        return '<div class="yt-item" data-vid="' + vid + '" data-title="' + esc(sn.title || 'YouTube video') + '" data-channel="' + esc(sn.channelTitle || '') + '">' +
-          (th ? '<img class="yt-thumb" src="' + esc(th.url) + '" alt="" loading="lazy">' : posterImg(sn.title, hueFor(vid), 'yt-thumb')) +
-          '<div class="yt-meta"><div class="t-title">' + esc(sn.title || 'YouTube video') + '</div><div class="t-artist">' + esc(sn.channelTitle || '') + '</div></div>' +
-          '<div class="t-dur">' + (durs[vid] ? fmt(durs[vid]) : '') + '</div></div>';
-      }).join('') + '</div>';
-    box.querySelectorAll('.yt-item').forEach(el => el.addEventListener('click', () => {
-      ytShowPlayer(el.dataset.vid, el.dataset.title, el.dataset.channel);
-    }));
-  } catch (e) {
-    box.innerHTML = '<div class="sp-notice err">Couldn\u2019t search YouTube (' + esc(e.message) + '). Check your connection and key, then try again.</div>';
-  }
+  if (!key) return [];
+  const sp = new URLSearchParams({ part: 'snippet,contentDetails', chart: 'mostPopular', videoCategoryId: '10', regionCode: 'IN', maxResults: '12', key });
+  const res = await fetch('https://www.googleapis.com/youtube/v3/videos?' + sp.toString());
+  if (!res.ok) throw new Error('YouTube error ' + res.status);
+  const json = await res.json();
+  ytTrendCache = (json.items || []).map(v => ({
+    id: v.id,
+    title: v.snippet?.title || 'YouTube video',
+    channel: v.snippet?.channelTitle || '',
+    thumb: v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || '',
+    dur: ytIsoSecs(v.contentDetails?.duration)
+  }));
+  return ytTrendCache;
 }
+
