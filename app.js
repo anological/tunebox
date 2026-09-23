@@ -76,9 +76,31 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 const trackById = id => library.find(t => t.id === id) || spotifyTrackCache[id] || audiusTrackCache[id] || archiveTrackCache[id];
 const coverStyle = t => `background: linear-gradient(135deg, hsl(${t.hue},70%,45%), hsl(${(t.hue + 50) % 360},75%,28%))`;
-const coverHTML = (t, cls) => t.image
-  ? `<div class="${cls}" style="background-image:url('${t.image}');background-size:cover;background-position:center"></div>`
-  : `<div class="${cls}" style="${coverStyle(t)}"></div>`;
+/* Generated poster artwork: a real image so no track ever shows a blank hole.
+   Stable per-name color, big initial letter + music notes, SVG data URI. */
+const hueFor = s => { let h = 7; s = String(s == null ? '' : s); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h % 360; };
+const posterURL = (name, hue) => {
+  hue = ((hue == null ? hueFor(name) : hue) % 360 + 360) % 360;
+  const h2 = (hue + 50) % 360;
+  const ch = esc((String(name || '').trim().charAt(0) || '♪').toUpperCase());
+  const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'>" +
+    "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>" +
+    "<stop offset='0' stop-color='hsl(" + hue + ",72%,46%)'/>" +
+    "<stop offset='1' stop-color='hsl(" + h2 + ",76%,26%)'/></linearGradient></defs>" +
+    "<rect width='300' height='300' fill='url(#g)'/>" +
+    "<circle cx='150' cy='126' r='88' fill='rgba(255,255,255,0.13)'/>" +
+    "<text x='150' y='170' font-size='92' text-anchor='middle' fill='rgba(255,255,255,0.95)' font-family='Arial,Helvetica,sans-serif'>" + ch + "</text>" +
+    "<text x='150' y='262' font-size='38' text-anchor='middle' fill='rgba(255,255,255,0.6)' font-family='Arial,Helvetica,sans-serif'>&#9834; &#9835;</text></svg>";
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg).replace(/'/g, '%27');
+};
+const posterImg = (name, hue, cls) => `<img class="${cls}" src="${posterURL(name, hue)}" alt="" loading="lazy">`;
+const coverHTML = (t, cls) => {
+  const poster = posterURL((t.title || '') + ' ' + (t.artist || ''), t.hue);
+  const bg = t.image
+    ? `background-image:url('${t.image}'),url("${poster}");` /* poster shows through if t.image 404s */
+    : `background-image:url("${poster}");`;
+  return `<div class="${cls}" style="${bg}background-size:cover;background-position:center"></div>`;
+};
 const totalDur = ids => ids.reduce((a, id) => a + (trackById(id)?.duration || 0), 0);
 
 /* ---------------- Player ---------------- */
@@ -174,7 +196,10 @@ function syncPlayerUI() {
   const t = currentTrack();
   syncPlayBtn();
   if (!t) return;
-  const covCss = t.image ? `background-image:url("${t.image}");background-size:cover;background-position:center` : coverStyle(t);
+  const poster = posterURL((t.title || '') + ' ' + (t.artist || ''), t.hue);
+  const covCss = t.image
+    ? `background-image:url("${t.image}"),url("${poster}");background-size:cover;background-position:center`
+    : `background-image:url("${poster}");background-size:cover;background-position:center`;
   $('#pb-cover').style.cssText = covCss;
   $('#pb-title').textContent = t.title;
   $('#pb-artist').textContent = t.artist;
@@ -856,7 +881,7 @@ async function renderSpPlaylistDetail(id) {
   $('#sp-content').innerHTML = `
     <button class="ghost-btn" id="sp-back">← Back to playlists</button>
     <div class="pl-header">
-      ${img ? `<img class="pl-big-cover" src="${img}" alt="">` : `<div class="pl-big-cover" style="background:linear-gradient(135deg,hsl(160,70%,45%),hsl(210,75%,28%))">&#9835;</div>`}
+      ${img ? `<img class="pl-big-cover" src="${img}" alt="">` : posterImg(data.name || name, hueFor(data.name || name), 'pl-big-cover')}
       <div><div class="pl-type">Spotify Playlist</div>
         <div class="pl-title-big">${esc(data.name)}</div>
         <div class="pl-meta">${esc((data.description || '').replace(/<[^>]*>/g, ''))} • ${tracks.length} songs</div></div>
@@ -977,12 +1002,12 @@ async function doSpSearch() {
       html += `<div class="section-title">Albums & Playlists</div><div class="card-grid">`;
       html += albums.map(a => `
         <button class="card" data-spalb="${a.id}" data-spimg="${a.images?.[0]?.url || ''}">
-          ${a.images?.[0]?.url ? `<img class="c-cover" src="${a.images[0].url}" alt="">` : ''}
+          ${a.images?.[0]?.url ? `<img class="c-cover" src="${a.images[0].url}" alt="">` : posterImg(a.name, hueFor(a.name), 'c-cover')}
           <div class="c-title">${esc(a.name)}</div><div class="c-sub">Album • ${esc((a.artists || []).map(x => x.name).join(', '))}</div>
         </button>`).join('');
       html += pls.map(p => `
         <button class="card" data-sppl="${p.id}">
-          ${p.images?.[0]?.url ? `<img class="c-cover" src="${p.images[0].url}" alt="">` : ''}
+          ${p.images?.[0]?.url ? `<img class="c-cover" src="${p.images[0].url}" alt="">` : posterImg(p.name, hueFor(p.name), 'c-cover')}
           <div class="c-title">${esc(p.name)}</div><div class="c-sub">Playlist</div>
         </button>`).join('');
       html += `</div>`;
@@ -1005,7 +1030,7 @@ async function renderSpAlbum(id, img, name) {
   $('#sp-content').innerHTML = `
     <button class="ghost-btn" id="sp-back">← Back to search</button>
     <div class="pl-header">
-      ${img ? `<img class="pl-big-cover" src="${img}" alt="">` : `<div class="pl-big-cover" style="background:linear-gradient(135deg,hsl(160,70%,45%),hsl(210,75%,28%))">&#9835;</div>`}
+      ${img ? `<img class="pl-big-cover" src="${img}" alt="">` : posterImg(data.name || name, hueFor(data.name || name), 'pl-big-cover')}
       <div><div class="pl-type">Spotify Album</div>
         <div class="pl-title-big">${esc(data.name || name)}</div>
         <div class="pl-meta">${esc((data.artists || []).map(a => a.name).join(', '))} • ${tracks.length} songs</div></div>
@@ -1217,12 +1242,14 @@ async function loadIaResults() {
     const docs = await iaSearch(iaQuery);
     if (!docs.length) { box.innerHTML = `<div class="empty">No results — try another search.</div>`; return; }
     box.innerHTML = `<div class="section-title">${iaQuery.trim() ? `Results for "${esc(iaQuery.trim())}"` : 'Popular live recordings'}</div><div class="card-grid">` +
-      docs.map(d => `
+      docs.map(d => {
+        const poster = posterURL(d.title || d.identifier, hueFor(d.identifier));
+        return `
         <button class="card" data-iaid="${esc(d.identifier)}">
-          <img class="c-cover" src="https://archive.org/services/img/${esc(d.identifier)}" alt="" loading="lazy" onerror="this.style.display='none'">
+          <img class="c-cover" src="https://archive.org/services/img/${esc(d.identifier)}" alt="" loading="lazy" onerror="this.onerror=null;this.src='${poster}'">
           <div class="c-title">${esc(d.title || d.identifier)}</div>
           <div class="c-sub">${esc(d.creator || '')}${d.year ? ' • ' + esc(d.year) : ''}</div>
-        </button>`).join('') + `</div>`;
+        </button>`; }).join('') + `</div>`;
     box.querySelectorAll('[data-iaid]').forEach(b => b.addEventListener('click', () => { iaItemId = b.dataset.iaid; renderFree(); }));
   } catch (e) {
     box.innerHTML = `<div class="sp-notice err">Couldn't reach archive.org (${esc(e.message)}). Check your connection and try again.</div>`;
@@ -1238,7 +1265,7 @@ async function renderIaDetail() {
     body.innerHTML = `
       <button class="ghost-btn" id="ia-back">← Back to results</button>
       <div class="pl-header">
-        <img class="pl-big-cover" src="https://archive.org/services/img/${esc(iaItemId)}" alt="" onerror="this.style.display='none'">
+        <img class="pl-big-cover" src="https://archive.org/services/img/${esc(iaItemId)}" alt="" onerror="this.onerror=null;this.src='${posterURL(iaItemId, hueFor(iaItemId))}'">
         <div><div class="pl-type">Internet Archive</div>
           <div class="pl-title-big">${esc(title)}</div>
           <div class="pl-meta">${esc(creator)} • ${ids.length} tracks</div></div>
@@ -1369,7 +1396,7 @@ async function ytDoSearch() {
         const sn = i.snippet || {};
         const th = sn.thumbnails && (sn.thumbnails.medium || sn.thumbnails.default);
         return '<div class="yt-item" data-vid="' + vid + '" data-title="' + esc(sn.title || 'YouTube video') + '" data-channel="' + esc(sn.channelTitle || '') + '">' +
-          (th ? '<img class="yt-thumb" src="' + esc(th.url) + '" alt="" loading="lazy">' : '<div class="yt-thumb"></div>') +
+          (th ? '<img class="yt-thumb" src="' + esc(th.url) + '" alt="" loading="lazy">' : posterImg(sn.title, hueFor(vid), 'yt-thumb')) +
           '<div class="yt-meta"><div class="t-title">' + esc(sn.title || 'YouTube video') + '</div><div class="t-artist">' + esc(sn.channelTitle || '') + '</div></div>' +
           '<div class="t-dur">' + (durs[vid] ? fmt(durs[vid]) : '') + '</div></div>';
       }).join('') + '</div>';
