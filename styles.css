@@ -406,3 +406,16 @@ img.pl-big-cover { object-fit: cover; }
 .row-actions { white-space: nowrap; }
 .dl-btn { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 8px; }
 .dl-btn:hover { color: var(--text); background: rgba(255,255,255,.08); }
+
+/* Personal recommendations: Jump Back In + Made-for-you mixes */
+.rec-row { display: flex; gap: 14px; overflow-x: auto; padding: 4px 2px 14px; margin-bottom: 20px; scrollbar-width: thin; }
+.rec-card { flex: 0 0 132px; background: none; border: none; color: var(--text); text-align: left; cursor: pointer; padding: 0; }
+.rec-card:hover .rec-cover { transform: scale(1.03); }
+.rec-cover { width: 132px; height: 132px; border-radius: 12px; background-size: cover; background-position: center; margin-bottom: 8px; transition: transform .15s; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.rec-card .t-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-card .t-artist { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mix-note { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 46px; color: rgba(255,255,255,.9); text-shadow: 0 2px 10px rgba(0,0,0,.3); }
+@media (max-width: 600px) {
+  .rec-card { flex-basis: 108px; }
+  .rec-cover { width: 108px; height: 108px; }
+}

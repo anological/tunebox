@@ -26,7 +26,17 @@ let currentView = { name: 'home' };
 let history = [], hIndex = -1;
 
 /* ---------------- Persistence ---------------- */
-const LS_PL = 'tunebox.playlists', LS_LIKED = 'tunebox.liked';
+const LS_PL = 'tunebox.playlists', LS_LIKED = 'tunebox.liked', LS_LISTEN = 'tunebox.listens';
+/* Listening history: what you actually play — the basis of your taste profile.
+   Local only, newest last, capped at 300. */
+let listenLog = [];
+try { listenLog = JSON.parse(localStorage.getItem(LS_LISTEN) || '[]'); } catch (e) { listenLog = []; }
+function recordListen(id) {
+  if (!id || listenLog[listenLog.length - 1] === id) return;
+  listenLog.push(id);
+  if (listenLog.length > 300) listenLog = listenLog.slice(-300);
+  try { localStorage.setItem(LS_LISTEN, JSON.stringify(listenLog)); } catch (e) { /* private mode */ }
+}
 function saveLS() {
   localStorage.setItem(LS_PL, JSON.stringify(playlists.filter(p => !p.builtin)));
   localStorage.setItem(LS_LIKED, JSON.stringify([...liked]));
@@ -130,6 +140,7 @@ function currentIsSpotify() { return isSpotifyTrack(currentTrack()); }
 async function playCurrent() {
   const t = currentTrack();
   if (!t) return;
+  recordListen(t.id);
   if (isSpotifyTrack(t)) {
     audio.pause(); // stop any local playback first
     try {
@@ -332,6 +343,98 @@ function trackTable(ids) {
     <tbody>${ids.map((id, i) => { const t = trackById(id); return t ? trackRow(t, i) : ''; }).join('')}</tbody></table>`;
 }
 
+/* ---------------- Personal recommendations: your taste profile + Made-for-you mixes ---------------- */
+function trackTags(t) {
+  const tags = [...(t.tags || [])].map(x => String(x).toLowerCase());
+  if (t.genre) tags.push(String(t.genre).toLowerCase());
+  return tags;
+}
+/* Taste profile: liked songs count 3x, every play counts 1x. Returns [[tag, score], ...]. */
+function tasteProfile() {
+  const scores = {};
+  const add = (t, w) => trackTags(t).forEach(tag => { scores[tag] = (scores[tag] || 0) + w; });
+  liked.forEach(id => { const t = trackById(id); if (t) add(t, 3); });
+  listenLog.forEach(id => { const t = trackById(id); if (t) add(t, 1); });
+  return Object.entries(scores).sort((a, b) => b[1] - a[1]);
+}
+function topPlayedIds(n) {
+  const counts = {};
+  listenLog.forEach(id => { counts[id] = (counts[id] || 0) + 1; });
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]).filter(id => trackById(id));
+}
+const MOOD_TAGS = {
+  chill:  ['chill', 'ambient', 'lofi', 'acoustic', 'folk', 'jazz', 'classical', 'r&b/soul', 'world'],
+  energy: ['workout', 'electronic', 'dance', 'edm', 'hip-hop', 'hip-hop/rap', 'pop', 'rock', 'punk', 'metal', 'latin', 'reggae'],
+  focus:  ['ambient', 'classical', 'jazz', 'acoustic', 'lofi', 'piano'],
+};
+let mixCache = {};
+const poolTracks = () => [...library, ...Object.values(audiusTrackCache)];
+function buildMoodMix(tags, n = 20) {
+  const pool = poolTracks();
+  const ids = [];
+  const push = t => { if (t && !ids.includes(t.id) && ids.length < n) ids.push(t.id); };
+  for (const tag of tags) for (const t of pool) if (trackTags(t).includes(tag)) push(t);
+  return ids;
+}
+function buildMyMix() {
+  const topTags = tasteProfile().slice(0, 3).map(e => e[0]);
+  const ids = [];
+  const push = id => { if (id && trackById(id) && !ids.includes(id) && ids.length < 25) ids.push(id); };
+  [...liked].sort(() => Math.random() - 0.5).forEach(push);
+  topPlayedIds(15).forEach(push);
+  const pool = poolTracks();
+  for (const tag of topTags) for (const t of pool) if (trackTags(t).includes(tag)) push(t.id);
+  if (ids.length < 8) pool.map(t => t.id).sort(() => Math.random() - 0.5).forEach(push);
+  return ids;
+}
+let freshCache = null;
+async function buildFreshMix() {
+  if (freshCache) return freshCache;
+  const fav = tasteProfile().slice(0, 3).map(e => e[0]);
+  const items = await auApi('/tracks/trending?limit=50');
+  const known = new Set([...liked, ...listenLog]);
+  const ids = [];
+  const consider = (item, matchGenre) => {
+    if (!item || !item.id || item.is_streamable === false) return;
+    const id = 'au:' + item.id;
+    if (known.has(id) || ids.includes(id)) return;
+    if (matchGenre) {
+      const g = String(item.genre || '').toLowerCase();
+      if (fav.length && !fav.some(tag => g.includes(tag) || tag.includes(g))) return;
+    }
+    ids.push(auTrack(item).id);
+  };
+  items.forEach(it => consider(it, true));
+  if (ids.length < 8) items.forEach(it => consider(it, false));
+  freshCache = ids.slice(0, 15);
+  return freshCache;
+}
+function buildMixes() {
+  mixCache = {
+    mymix:  { id: 'mymix',  name: 'My Mix',     desc: 'Your favorites and most-played, plus more like them.', hue: 285, trackIds: buildMyMix() },
+    chill:  { id: 'chill',  name: 'Chill Mix',  desc: 'Easy-going picks for winding down.',                    hue: 200, trackIds: buildMoodMix(MOOD_TAGS.chill) },
+    energy: { id: 'energy', name: 'Energy Mix', desc: 'Upbeat tracks to move to.',                             hue: 8,   trackIds: buildMoodMix(MOOD_TAGS.energy) },
+    focus:  { id: 'focus',  name: 'Focus Mix',  desc: 'Calm sound for deep work.',                             hue: 260, trackIds: buildMoodMix(MOOD_TAGS.focus) },
+  };
+}
+function renderMix(id) {
+  const m = mixCache[id];
+  if (!m || !m.trackIds.length) { go('home'); return; }
+  const savedId = 'saved-' + id;
+  const saved = playlists.some(p => p.id === savedId);
+  $('#view').innerHTML =
+    playlistHeader({ name: m.name, desc: m.desc + ' • Made for you', hue: m.hue }, m.trackIds) +
+    (saved ? '' : `<div class="pl-actions"><button class="ghost-btn" id="mix-save">Save as playlist</button></div>`) +
+    trackTable(m.trackIds);
+  $('#pl-play').addEventListener('click', () => { setQueue(m.trackIds, 0); playCurrent(); });
+  const sv = $('#mix-save');
+  if (sv) sv.addEventListener('click', () => {
+    playlists.push({ id: savedId, name: m.name, desc: m.desc, trackIds: [...m.trackIds], hue: m.hue });
+    saveLS(); renderSidebar(); renderMix(id);
+  });
+  bindTrackRows(m.trackIds);
+}
+
 async function renderHome() {
   const hour = new Date().getHours();
   const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
@@ -342,6 +445,27 @@ async function renderHome() {
       <div class="c-title">${esc(p.name)}</div><div class="c-sub">${esc(p.desc || p.trackIds.length + ' songs')}</div>
       <span class="c-play" data-play-pl="${p.id}">&#9654;</span>
     </button>`).join('');
+  buildMixes();
+  try {
+    const freshIds = await buildFreshMix();
+    if (freshIds.length) mixCache.fresh = { id: 'fresh', name: 'Fresh Finds', desc: 'New tracks matching your taste.', hue: 150, trackIds: freshIds };
+  } catch (e) { /* Fresh Finds is optional — home must never break */ }
+  const mixes = Object.values(mixCache).filter(m => m.trackIds.length);
+  const mixCards = mixes.map(m => `
+    <button class="card" data-mix="${m.id}">
+      <div class="c-cover" style="background:linear-gradient(135deg,hsl(${m.hue},70%,45%),hsl(${(m.hue+50)%360},75%,28%))"><span class="mix-note">&#9835;</span></div>
+      <div class="c-title">${esc(m.name)}</div><div class="c-sub">${m.trackIds.length} songs • Made for you</div>
+      <span class="c-play" data-play-mix="${m.id}">&#9654;</span>
+    </button>`).join('');
+  const recents = [...new Set([...listenLog].reverse())].map(id => trackById(id)).filter(Boolean).slice(0, 12);
+  const recentRow = recents.length ? `
+    <div class="section-title">Jump Back In</div>
+    <div class="rec-row">${recents.map(t => `
+      <button class="rec-card" data-rec="${t.id}">
+        ${coverHTML(t, 'rec-cover')}
+        <div class="t-title">${esc(t.title)}</div>
+        <div class="t-artist">${esc(t.artist)}</div>
+      </button>`).join('')}</div>` : '';
   $('#view').innerHTML = `
     <div class="greeting">${greet}</div>
     <div class="quick-grid">${quick.map(p => `
@@ -349,12 +473,26 @@ async function renderHome() {
         <div class="qc-cover" style="background:linear-gradient(135deg,hsl(${p.hue},70%,45%),hsl(${(p.hue+50)%360},75%,28%))"></div>
         <span>${esc(p.name)}</span>
       </button>`).join('')}</div>
-    <div class="section-title">Made for you</div>
+    ${recentRow}
+    ${mixes.length ? `<div class="section-title">Made for You</div><div class="card-grid">${mixCards}</div>` : ''}
+    <div class="section-title">Your Playlists</div>
     <div class="card-grid">${cards}</div>
     <div id="home-yt"><div class="uni-hint">Loading YouTube trending…</div></div>
     <div class="section-title">All tracks</div>
     ${trackTable(library.map(t => t.id))}`;
   bindCards(); bindTrackRows(library.map(t => t.id));
+  document.querySelectorAll('[data-mix]').forEach(c => c.addEventListener('click', e => {
+    if (e.target.closest('[data-play-mix]')) return;
+    go('mix', c.dataset.mix);
+  }));
+  document.querySelectorAll('[data-play-mix]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const m = mixCache[b.dataset.playMix];
+    if (m && m.trackIds.length) { setQueue(m.trackIds, 0); playCurrent(); }
+  }));
+  document.querySelectorAll('[data-rec]').forEach(b => b.addEventListener('click', () => {
+    playTrackById(b.dataset.rec, recents.map(t => t.id));
+  }));
   // YouTube trending (fails silently — home must never break)
   try {
     const trends = await ytTrending();
@@ -538,6 +676,7 @@ function rerender() {
   if (currentView.name === 'home') renderHome();
   else if (currentView.name === 'search') renderSearch(currentView.arg);
   else if (currentView.name === 'playlist') renderPlaylist(currentView.arg);
+  else if (currentView.name === 'mix') renderMix(currentView.arg);
   else if (currentView.name === 'liked') renderLiked();
   else if (currentView.name === 'spotify') renderSpotify();
   else if (currentView.name === 'free') renderFree();
@@ -1218,6 +1357,7 @@ function auTrack(item) {
       artist: item.user?.name || 'Unknown artist',
       album: '',
       duration: Math.round(item.duration || 0),
+      genre: item.genre || '',
       image: item.artwork?.['480x480'] || item.artwork?.['150x150'] || '',
       src: `${AU_API}/tracks/${item.id}/stream?app_name=${AU_APP}`,
       hue: hashHue(String(item.id))
