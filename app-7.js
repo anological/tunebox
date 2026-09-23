@@ -443,7 +443,7 @@ function togglePlay() {
     if (!ids.length) return;
     setQueue(ids, 0); playCurrent(); return;
   }
-  if (ytMode && ytPlayer) { ytPlaying ? ytPlayer.pauseVideo() : ytPlayer.playVideo(); }
+  if (ytMode && ytPlayer) { if (ytPlaying && !ytStalled) ytPlayer.pauseVideo(); else { ytStalled = false; ytPlayer.playVideo(); armYtStallWatchdog(4000); } }
   else if (currentIsSpotify() && spPlayer) (spPlaying ? spPlayer.pause() : spPlayer.resume()).catch(() => {});
   else {
     audio.paused ? audio.play().catch(() => {}) : audio.pause();
@@ -483,7 +483,7 @@ audio.addEventListener('error', () => step(1));
 
 let seeking = false;
 function isPlaying() { const t = currentTrack(); if (!t) return false; if (ytMode) return ytPlaying; return t.source === 'spotify' ? spPlaying : !audio.paused; }
-function syncPlayBtn() { $('#play').innerHTML = isPlaying() ? '&#10073;&#10073;' : '&#9654;'; }
+function syncPlayBtn() { const p = isPlaying(); $('#play').innerHTML = p ? '&#10073;&#10073;' : '&#9654;'; $('#play').title = p ? 'Pause' : 'Play'; $('#play').setAttribute('aria-label', p ? 'Pause' : 'Play'); }
 function syncPlayerUI() {
   const t = currentTrack();
   syncPlayBtn();
@@ -770,7 +770,7 @@ function renderAlbum(id) {
     </div>
     <div class="section-title">Tracks</div>
     ${trackTable(ids)}
-    <div class="sp-note" style="margin-top:14px">Plays free via YouTube audio.</div>`;
+    <div class="sp-note" style="margin-top:14px">Plays free via YouTube audio · a short ad may play first.</div>`;
   $('#album-play').addEventListener('click', () => playAlbum(a, 0));
   bindTrackRows(ids);
 }
@@ -1221,6 +1221,11 @@ async function init() {
   renderAuthArea();
   checkSession().catch(() => {});
   go(authed ? 'spotify' : 'home');
+  // Warm up the YouTube player API while idle so the first Play tap stays
+  // inside the browser's user-activation window (autoplay with sound allowed).
+  const warmYt = () => ensureYtApi().catch(() => {});
+  if ('requestIdleCallback' in window) requestIdleCallback(warmYt, { timeout: 8000 });
+  else setTimeout(warmYt, 3000);
 }
 document.addEventListener('DOMContentLoaded', init);
 
@@ -1431,12 +1436,16 @@ async function spPlayUri(uri) {
 /* ----- Free fallback: Spotify tracks play through YouTube when the account isn't Premium -----
    Spotify login still provides the library (playlists, liked songs, search). Only the audio
    transport switches: a hidden YouTube IFrame player streams the matched video's audio. */
-let ytApiLoading = null, ytPlayer = null, ytMode = false, ytPlaying = false, ytNoticeShown = false;
+let ytApiReady = null, ytApiLoading = null, ytPlayer = null, ytMode = false, ytPlaying = false, ytNoticeShown = false;
+let ytStallTimer = null, ytStalled = false;
 const ytVideoCache = {};
 
-function ensureYtPlayer() {
-  if (ytApiLoading) return ytApiLoading;
-  const p = new Promise((res, rej) => {
+/* Load the YouTube IFrame API early (idle time after boot) so that when the user
+   taps Play, player creation + loadVideoById happen inside the browser's
+   user-activation window and autoplay with sound is allowed. */
+function ensureYtApi() {
+  if (ytApiReady) return ytApiReady;
+  ytApiReady = new Promise((res, rej) => {
     if (window.YT && window.YT.Player) return res();
     const to = setTimeout(() => rej(new Error('YouTube player timed out — check your connection')), 20000);
     const prev = window.onYouTubeIframeAPIReady;
@@ -1449,7 +1458,14 @@ function ensureYtPlayer() {
     s.src = 'https://www.youtube.com/iframe_api';
     s.onerror = () => { clearTimeout(to); rej(new Error('Could not load the YouTube player')); };
     document.head.appendChild(s);
-  }).then(() => new Promise((res, rej) => {
+  });
+  ytApiReady.catch(() => { ytApiReady = null; });
+  return ytApiReady;
+}
+
+function ensureYtPlayer() {
+  if (ytApiLoading) return ytApiLoading;
+  const p = ensureYtApi().then(() => new Promise((res, rej) => {
     // Reuse a working player; rebuild if a previous attempt left a broken one
     // (e.g. an adblocker-supplied stub without real player methods).
     if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') return res();
@@ -1507,7 +1523,8 @@ function replayCurrentYt() {
 }
 
 function stopYt() {
-  ytMode = false; ytPlaying = false;
+  ytMode = false; ytPlaying = false; ytStalled = false;
+  clearTimeout(ytStallTimer); ytStallTimer = null;
   try { if (ytPlayer && ytPlayer.pauseVideo) ytPlayer.pauseVideo(); } catch (e) {}
 }
 
@@ -1515,20 +1532,34 @@ function updateYtProgress() {
   if (!ytMode || !ytPlayer) return;
   try {
     const pos = ytPlayer.getCurrentTime() || 0, dur = ytPlayer.getDuration() || 0;
+    if (pos > 0.5) { if (ytStallTimer) { clearTimeout(ytStallTimer); ytStallTimer = null; } ytStalled = false; }
     $('#t-cur').textContent = fmt(pos);
     if (dur) $('#t-dur').textContent = fmt(dur);
     if (!seeking && dur) $('#seek').value = Math.round(pos / dur * 1000);
   } catch (e) { /* transient */ }
 }
 
+/* Watchdog: if the browser blocked autoplay (player never advances),
+   invite a fresh tap — playVideo() inside a real gesture is always allowed. */
+function armYtStallWatchdog(ms) {
+  clearTimeout(ytStallTimer);
+  ytStallTimer = setTimeout(() => {
+    if (!ytMode) return;
+    let pos = 0;
+    try { pos = (ytPlayer && ytPlayer.getCurrentTime()) || 0; } catch (e) {}
+    if (pos < 0.5) { ytStalled = true; spNotice('Tap Play to start the audio.'); }
+  }, ms || 6000);
+}
+
 async function playYtAudioTrack(t, vid) {
-  ytMode = true;
+  ytMode = true; ytStalled = false;
   if (spPlayer && spPlaying) spPlayer.pause().catch(() => {});
   spPlaying = false;
   audio.pause();
   try {
     await ensureYtPlayer();
     ytPlayer.loadVideoById(vid);
+    armYtStallWatchdog(6000);
   } catch (e) {
     ytMode = false;
     spNotice('Could not play via YouTube: ' + (e.message || e));
