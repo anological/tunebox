@@ -88,7 +88,47 @@ function idbAll() {
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
-const trackById = id => library.find(t => t.id === id) || spotifyTrackCache[id] || audiusTrackCache[id] || archiveTrackCache[id];
+const trackById = id => library.find(t => t.id === id) || spotifyTrackCache[id] || audiusTrackCache[id] || archiveTrackCache[id] || albumTrackCache[id];
+
+/* ---------------- Featured albums (curated; play free via YouTube audio) ---------------- */
+const albumTrackCache = {};
+const FEATURED_ALBUMS = [
+  {
+    id: 'designerr', title: 'DESIGNERR', artist: 'Jokhay & Umair', year: '2026', label: 'Mass Appeal',
+    cover: 'https://i.ytimg.com/vi/xOEFYt_3LaU/hqdefault.jpg',
+    blurb: 'The 2026 producer album from Jokhay & Umair — 12 tracks with Talha Anjum, Talhah Yunus, JJ47, Asim Azhar, Faris Shafi, Maanu, Afusic, Ghostface Killah, Benny The Butcher and more.',
+    tracks: [
+      { title: 'DESIGNERR', artist: 'Jokhay, Umair, CGF', ytId: 'xOEFYt_3LaU', dur: 119 },
+      { title: 'GOD KNOWS', artist: 'Jokhay, Umair, Talha Anjum, Talhah Yunus, JJ47', ytId: '_CVxGDf76OA', dur: 216 },
+      { title: 'BACKSEAT', artist: 'Jokhay, Umair, JANI, Jevin Gill, Talhah Yunus', ytId: 'X6tk8cZdjK8', dur: 209 },
+      { title: 'READY OR NOT', artist: 'Jokhay, Umair, Talha Anjum, Benny The Butcher', ytId: 'IGX3HRUOsQo', dur: 237 },
+      { title: 'MAFIA', artist: 'Jokhay, Umair, Talha Anjum, Rap Demon, Talhah Yunus', ytId: 'uZ0PfEoi5BE', dur: 243 },
+      { title: 'WAY 2 BLESSED', artist: 'Jokhay, Umair, Shareh, Keeya Keys, JJ47', ytId: 'ZefD4R5B3Wk', dur: 218 },
+      { title: 'GANGLAND', artist: 'Jokhay, Umair, Talha Anjum, JJ47, Ghostface Killah, Talhah Yunus', ytId: 'E5ccP8grfGY', dur: 251 },
+      { title: 'MISS ME?', artist: 'Jokhay, Umair, Asim Azhar, Faris Shafi', ytId: 'mDl16BBYMRo', dur: 184 },
+      { title: 'CLOSE 2 U', artist: 'Jokhay, Umair, Izzchughtai, Nehaal Naseem', ytId: 'L8As2megrzY', dur: 208 },
+      { title: 'DAAGH', artist: 'Jokhay, Umair, Maanu, Afusic', ytId: 'Kf0xzavQhNY', dur: 207 },
+      { title: 'REMEDY', artist: 'Jokhay, Umair, JANI, Nadine El Roubi', ytId: 'N5Lp0frXdKQ', dur: 204 },
+      { title: 'HOME', artist: 'Jokhay, Umair, Talha Anjum, Talhah Yunus', ytId: 'ZWG9iXnrDfI', dur: 277 },
+    ]
+  }
+];
+function albumTracks(a) {
+  return a.tracks.map((tr, i) => {
+    const id = `alb-${a.id}-${i}`;
+    if (!albumTrackCache[id]) albumTrackCache[id] = {
+      id, title: tr.title, artist: tr.artist, album: a.title,
+      source: 'yt-audio', ytId: tr.ytId, duration: tr.dur,
+      image: `https://i.ytimg.com/vi/${tr.ytId}/hqdefault.jpg`,
+      hue: 222, tags: ['hip-hop']
+    };
+    return albumTrackCache[id];
+  });
+}
+function playAlbum(a, idx) {
+  const ids = albumTracks(a).map(t => t.id);
+  setQueue(ids, idx || 0); playCurrent();
+}
 const coverStyle = t => `background: linear-gradient(135deg, hsl(${t.hue},70%,45%), hsl(${(t.hue + 50) % 360},75%,28%))`;
 /* Generated poster artwork: a real image so no track ever shows a blank hole.
    Stable per-name color, big initial letter + music notes, SVG data URI. */
@@ -369,7 +409,12 @@ async function playCurrent() {
   const t = currentTrack();
   if (!t) return;
   recordListen(t.id);
-  if (isSpotifyTrack(t)) {
+  if (t.source === 'yt-audio') {
+    audio.pause();
+    if (spPlayer && spPlaying) spPlayer.pause().catch(() => {});
+    spPlaying = false;
+    await playYtAudioTrack(t, t.ytId);
+  } else if (isSpotifyTrack(t)) {
     audio.pause(); // stop any local playback first
     await loadSpProfile().catch(() => {});
     if (spPremium) {
@@ -398,18 +443,17 @@ function togglePlay() {
     if (!ids.length) return;
     setQueue(ids, 0); playCurrent(); return;
   }
-  if (currentIsSpotify()) {
-    if (ytMode && ytPlayer) { ytPlaying ? ytPlayer.pauseVideo() : ytPlayer.playVideo(); }
-    else if (spPlayer) (spPlaying ? spPlayer.pause() : spPlayer.resume()).catch(() => {});
-  } else {
+  if (ytMode && ytPlayer) { ytPlaying ? ytPlayer.pauseVideo() : ytPlayer.playVideo(); }
+  else if (currentIsSpotify() && spPlayer) (spPlaying ? spPlayer.pause() : spPlayer.resume()).catch(() => {});
+  else {
     audio.paused ? audio.play().catch(() => {}) : audio.pause();
   }
   syncPlayerUI();
 }
 function step(dir) {
   if (!queue.length) return;
-  const yt = ytMode && ytPlayer && currentIsSpotify();
-  const pos = currentIsSpotify() ? (yt ? ytPlayer.getCurrentTime() : spPosition / 1000) : audio.currentTime;
+  const yt = ytMode && ytPlayer;
+  const pos = yt ? ytPlayer.getCurrentTime() : (currentIsSpotify() ? spPosition / 1000 : audio.currentTime);
   if (dir < 0 && pos > 3) {
     if (yt) ytPlayer.seekTo(0, true);
     else if (currentIsSpotify() && spPlayer) spPlayer.seek(0).catch(() => {});
@@ -438,7 +482,7 @@ audio.addEventListener('pause', syncPlayBtn);
 audio.addEventListener('error', () => step(1));
 
 let seeking = false;
-function isPlaying() { const t = currentTrack(); return t && t.source === 'spotify' ? (ytMode ? ytPlaying : spPlaying) : !audio.paused; }
+function isPlaying() { const t = currentTrack(); if (!t) return false; if (ytMode) return ytPlaying; return t.source === 'spotify' ? spPlaying : !audio.paused; }
 function syncPlayBtn() { $('#play').innerHTML = isPlaying() ? '&#10073;&#10073;' : '&#9654;'; }
 function syncPlayerUI() {
   const t = currentTrack();
@@ -708,6 +752,29 @@ function renderMix(id) {
   bindTrackRows(m.trackIds);
 }
 
+/* ---------------- Featured album detail ---------------- */
+function renderAlbum(id) {
+  const a = FEATURED_ALBUMS.find(x => x.id === id);
+  if (!a) { go('home'); return; }
+  const tracks = albumTracks(a);
+  const ids = tracks.map(t => t.id);
+  $('#view').innerHTML = `
+    <div class="pl-header">
+      <img class="pl-big-cover" src="${esc(a.cover)}" alt="">
+      <div><div class="pl-type">Album • ${esc(a.label || '')}</div>
+        <div class="pl-title-big">${esc(a.title)}</div>
+        <div class="pl-meta">${esc(a.artist)} • ${a.year || ''} • ${tracks.length} songs, ${fmt(tracks.reduce((s, t) => s + (t.duration || 0), 0))}</div>
+        ${a.blurb ? `<div class="pl-meta" style="margin-top:8px;max-width:560px">${esc(a.blurb)}</div>` : ''}
+        <div class="pl-actions" style="margin-top:12px"><button class="big-play" id="album-play">&#9654;</button></div>
+      </div>
+    </div>
+    <div class="section-title">Tracks</div>
+    ${trackTable(ids)}
+    <div class="sp-note" style="margin-top:14px">Plays free via YouTube audio.</div>`;
+  $('#album-play').addEventListener('click', () => playAlbum(a, 0));
+  bindTrackRows(ids);
+}
+
 async function renderHome() {
   const hour = new Date().getHours();
   const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
@@ -748,6 +815,12 @@ async function renderHome() {
       </button>`).join('')}</div>
     ${recentRow}
     ${mixes.length ? `<div class="section-title">Made for You</div><div class="card-grid">${mixCards}</div>` : ''}
+    ${FEATURED_ALBUMS.length ? `<div class="section-title">Featured albums</div><div class="card-grid">${FEATURED_ALBUMS.map(a => `
+      <button class="card" data-album="${a.id}">
+        <img class="c-cover" src="${esc(a.cover)}" alt="" loading="lazy">
+        <div class="c-title">${esc(a.title)}</div><div class="c-sub">${esc(a.artist)} • ${a.tracks.length} songs</div>
+        <span class="c-play" data-play-album="${a.id}">&#9654;</span>
+      </button>`).join('')}</div>` : ''}
     <div class="section-title">Your Playlists</div>
     <div class="card-grid">${cards}</div>
     <div id="home-yt">
@@ -769,6 +842,15 @@ async function renderHome() {
   }));
   document.querySelectorAll('[data-rec]').forEach(b => b.addEventListener('click', () => {
     playTrackById(b.dataset.rec, recents.map(t => t.id));
+  }));
+  document.querySelectorAll('[data-album]').forEach(c => c.addEventListener('click', e => {
+    if (e.target.closest('[data-play-album]')) return;
+    go('album', c.dataset.album);
+  }));
+  document.querySelectorAll('[data-play-album]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const a = FEATURED_ALBUMS.find(x => x.id === b.dataset.playAlbum);
+    if (a) playAlbum(a, 0);
   }));
   // YouTube trending (fails silently — home must never break)
   try {
@@ -986,6 +1068,7 @@ function rerender() {
   else if (currentView.name === 'search') renderSearch(currentView.arg);
   else if (currentView.name === 'playlist') renderPlaylist(currentView.arg);
   else if (currentView.name === 'mix') renderMix(currentView.arg);
+  else if (currentView.name === 'album') renderAlbum(currentView.arg);
   else if (currentView.name === 'liked') renderLiked();
   else if (currentView.name === 'spotify') renderSpotify();
   else if (currentView.name === 'free') renderFree();
@@ -1073,10 +1156,8 @@ async function init() {
   seek.addEventListener('pointerdown', () => seeking = true);
   seek.addEventListener('pointerup', () => seeking = false);
   seek.addEventListener('input', () => {
-    if (currentIsSpotify()) {
-      if (ytMode && ytPlayer) { const d = ytPlayer.getDuration(); if (d) ytPlayer.seekTo(seek.value / 1000 * d, true); }
-      else if (spPlayer && spDuration) spPlayer.seek(Math.round(seek.value / 1000 * spDuration)).catch(() => {});
-    }
+    if (ytMode && ytPlayer) { const d = ytPlayer.getDuration(); if (d) ytPlayer.seekTo(seek.value / 1000 * d, true); }
+    else if (currentIsSpotify()) { if (spPlayer && spDuration) spPlayer.seek(Math.round(seek.value / 1000 * spDuration)).catch(() => {}); }
     else if (audio.duration) audio.currentTime = seek.value / 1000 * audio.duration;
   });
   const vol = $('#volume');
@@ -1315,9 +1396,8 @@ async function ensureSpotifyPlayer() {
   const ok = await spPlayer.connect();
   if (!ok) throw new Error('could not connect the Spotify player');
   if (!spPollTimer) spPollTimer = setInterval(async () => {
-    if (!currentIsSpotify()) return;
     if (ytMode) { updateYtProgress(); return; }
-    if (!spPlayer) return;
+    if (!spPlayer || !currentIsSpotify()) return;
     try {
       const s = await spPlayer.getCurrentState();
       if (s) {
@@ -1387,10 +1467,17 @@ function onYtState(e) {
   if (!ytMode || !window.YT) return;
   ytPlaying = e.data === YT.PlayerState.PLAYING;
   if (e.data === YT.PlayerState.ENDED) {
-    if (repeatMode === 'one') { const t = currentTrack(); if (t) playSpotifyViaYouTube(t); }
+    if (repeatMode === 'one') replayCurrentYt();
     else step(1);
   }
   syncPlayBtn();
+}
+
+function replayCurrentYt() {
+  const t = currentTrack();
+  if (!t) return;
+  if (t.ytId) playYtAudioTrack(t, t.ytId);
+  else playSpotifyViaYouTube(t);
 }
 
 function stopYt() {
@@ -1408,13 +1495,23 @@ function updateYtProgress() {
   } catch (e) { /* transient */ }
 }
 
-async function playSpotifyViaYouTube(t) {
+async function playYtAudioTrack(t, vid) {
   ytMode = true;
   if (spPlayer && spPlaying) spPlayer.pause().catch(() => {});
   spPlaying = false;
   audio.pause();
   try {
     await ensureYtPlayer();
+    ytPlayer.loadVideoById(vid);
+  } catch (e) {
+    ytMode = false;
+    spNotice('Could not play via YouTube: ' + (e.message || e));
+  }
+  syncPlayerUI();
+}
+
+async function playSpotifyViaYouTube(t) {
+  try {
     let vid = ytVideoCache[t.id];
     if (!vid) {
       const res = await fetch(backendUrl() + '/api/yt/search?' + new URLSearchParams({ q: `${t.title} ${t.artist} audio` }));
@@ -1424,10 +1521,9 @@ async function playSpotifyViaYouTube(t) {
       vid = items[0].id;
       ytVideoCache[t.id] = vid;
     }
-    ytPlayer.loadVideoById(vid);
+    await playYtAudioTrack(t, vid);
     if (!ytNoticeShown) { ytNoticeShown = true; toast('No Spotify Premium — playing your Spotify tracks free via YouTube.'); }
   } catch (e) {
-    ytMode = false;
     spNotice('Could not play via YouTube: ' + (e.message || e));
   }
   syncPlayerUI();
