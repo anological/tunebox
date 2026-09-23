@@ -118,6 +118,38 @@ export default {
       return json(slimSearch(await yt.json()), 200, cors);
     }
 
+    /* ---- Status page: friendly landing at /, so the bare URL isn't a bare 404 ---- */
+    if (url.pathname === '/') {
+      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tunebox backend</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:#0d1117;color:#e6edf3;font-family:system-ui,-apple-system,sans-serif}
+  .card{max-width:520px;padding:40px 32px;text-align:center}
+  .dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#3fb950;
+    box-shadow:0 0 12px #3fb950;margin-right:8px;vertical-align:1px}
+  h1{font-size:24px;margin:0 0 8px}
+  p{color:#8b949e;line-height:1.6;margin:8px 0}
+  code{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:2px 8px;
+    font-size:13px;color:#79c0ff}
+  .eps{margin-top:20px;text-align:left;display:inline-block}
+  .eps div{margin:6px 0}
+  a{color:#58a6ff}
+</style></head><body><div class="card">
+  <h1><span class="dot"></span>Tunebox backend is running</h1>
+  <p>This is the API server behind the <a href="https://anological.github.io/tunebox/">Tunebox</a>
+  music app. It keeps the YouTube API key on the server — there is no webpage here,
+  just these endpoints:</p>
+  <div class="eps">
+    <div><code>GET /api/yt/search?q=...</code> — YouTube music search</div>
+    <div><code>GET /api/yt/trending</code> — trending music videos (cached 1h)</div>
+  </div>
+  <p>Open the app to use it.</p>
+</div></body></html>`;
+      return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', ...cors } });
+    }
+
     return json({ error: 'Not found. Try /api/yt/search?q=... or /api/yt/trending' }, 404, cors);
   },
 };
