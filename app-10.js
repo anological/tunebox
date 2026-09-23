@@ -173,7 +173,7 @@ const totalDur = ids => ids.reduce((a, id) => a + (trackById(id)?.duration || 0)
 /* Global toast: one feedback bubble for the whole app (playlist actions,
    downloads, sync, errors). Reuses the #sp-toast element + styles. */
 let _toastEl = null, _toastT = null;
-function toast(msg) {
+function toast(msg, sticky) {
   if (!_toastEl) {
     _toastEl = document.getElementById('sp-toast');
     if (!_toastEl) { _toastEl = document.createElement('div'); _toastEl.id = 'sp-toast'; document.body.appendChild(_toastEl); }
@@ -182,7 +182,7 @@ function toast(msg) {
   if (!msg) { _toastEl.classList.remove('show'); return; }
   _toastEl.textContent = msg;
   _toastEl.classList.add('show');
-  _toastT = setTimeout(() => _toastEl.classList.remove('show'), 2600);
+  if (!sticky) _toastT = setTimeout(() => _toastEl.classList.remove('show'), 2600);
 }
 
 /* Modal dialog: styled replacement for prompt()/confirm(). */
@@ -443,7 +443,7 @@ function togglePlay() {
     if (!ids.length) return;
     setQueue(ids, 0); playCurrent(); return;
   }
-  if (ytMode && ytPlayer) { if (ytPlaying && !ytStalled) ytPlayer.pauseVideo(); else { ytStalled = false; $('#play')?.classList.remove('stalled'); ytPlayer.playVideo(); armYtStallWatchdog(4000); } }
+  if (ytMode && ytPlayer) { if (ytPlaying && !ytStalled) ytPlayer.pauseVideo(); else { disarmYtStall(); ytPlayer.playVideo(); armYtStallWatchdog(); } }
   else if (currentIsSpotify() && spPlayer) (spPlaying ? spPlayer.pause() : spPlayer.resume()).catch(() => {});
   else {
     audio.paused ? audio.play().catch(() => {}) : audio.pause();
@@ -1437,7 +1437,7 @@ async function spPlayUri(uri) {
    Spotify login still provides the library (playlists, liked songs, search). Only the audio
    transport switches: a hidden YouTube IFrame player streams the matched video's audio. */
 let ytApiReady = null, ytApiLoading = null, ytPlayer = null, ytMode = false, ytPlaying = false, ytNoticeShown = false;
-let ytStallTimer = null, ytStalled = false;
+let ytStallTimer = null, ytStalled = false, ytTickTimer = null;
 const ytVideoCache = {};
 
 /* Load the YouTube IFrame API early (idle time after boot) so that when the user
@@ -1523,9 +1523,9 @@ function replayCurrentYt() {
 }
 
 function stopYt() {
-  ytMode = false; ytPlaying = false; ytStalled = false;
-  clearTimeout(ytStallTimer); ytStallTimer = null;
-  $('#play')?.classList.remove('stalled');
+  ytMode = false; ytPlaying = false;
+  disarmYtStall();
+  clearInterval(ytTickTimer); ytTickTimer = null;
   try { if (ytPlayer && ytPlayer.pauseVideo) ytPlayer.pauseVideo(); } catch (e) {}
 }
 
@@ -1533,27 +1533,48 @@ function updateYtProgress() {
   if (!ytMode || !ytPlayer) return;
   try {
     const pos = ytPlayer.getCurrentTime() || 0, dur = ytPlayer.getDuration() || 0;
-    if (pos > 0.5) { if (ytStallTimer) { clearTimeout(ytStallTimer); ytStallTimer = null; } ytStalled = false; $('#play')?.classList.remove('stalled'); }
-    $('#t-cur').textContent = fmt(pos);
-    if (dur) $('#t-dur').textContent = fmt(dur);
-    if (!seeking && dur) $('#seek').value = Math.round(pos / dur * 1000);
+    if (dur > 0) { // main video (not an ad) — trust the numbers
+      if (pos > 0.5) disarmYtStall();
+      $('#t-cur').textContent = fmt(pos);
+      $('#t-dur').textContent = fmt(dur);
+      if (!seeking) $('#seek').value = Math.round(pos / dur * 1000);
+    }
   } catch (e) { /* transient */ }
 }
 
-/* Watchdog: if the browser blocked autoplay (player never advances),
-   invite a fresh tap — playVideo() inside a real gesture is always allowed. */
-function armYtStallWatchdog(ms) {
-  clearTimeout(ytStallTimer);
-  ytStallTimer = setTimeout(() => {
-    if (!ytMode) return;
-    let pos = 0;
-    try { pos = (ytPlayer && ytPlayer.getCurrentTime()) || 0; } catch (e) {}
-    if (pos < 0.5) {
-      ytStalled = true;
-      $('#play')?.classList.add('stalled');
-      spNotice('Tap Play to start the audio.');
+/* Stall watchdog: pre-roll ads report position 0 and no usable duration, so only
+   trust progress once the main video's metadata (duration) is available. If the
+   video never gets going, first try an automatic kick, then ask for a tap. */
+let ytPromptShown = false;
+function armYtStallWatchdog() {
+  clearInterval(ytStallTimer);
+  const t0 = Date.now();
+  let autoTried = false;
+  ytStallTimer = setInterval(() => {
+    if (!ytMode) { clearInterval(ytStallTimer); ytStallTimer = null; return; }
+    let pos = 0, dur = 0;
+    try { pos = ytPlayer.getCurrentTime() || 0; dur = ytPlayer.getDuration() || 0; } catch (e) {}
+    const elapsed = (Date.now() - t0) / 1000;
+    if (dur > 0 && pos > 0.5) { disarmYtStall(); return; }
+    const stuck = elapsed > 25 || (dur > 0 && elapsed > 12);
+    if (!stuck) return;
+    if (!autoTried) {
+      autoTried = true;
+      try { ytPlayer.seekTo(0, true); ytPlayer.playVideo(); } catch (e) {}
+      return;
     }
-  }, ms || 6000);
+    clearInterval(ytStallTimer); ytStallTimer = null;
+    ytStalled = true;
+    $('#play')?.classList.add('stalled');
+    ytPromptShown = true;
+    toast('Tap Play to start the audio.', true);
+  }, 2000);
+}
+function disarmYtStall() {
+  clearInterval(ytStallTimer); ytStallTimer = null;
+  ytStalled = false;
+  $('#play')?.classList.remove('stalled');
+  if (ytPromptShown) { ytPromptShown = false; toast(); }
 }
 
 async function playYtAudioTrack(t, vid) {
@@ -1564,9 +1585,12 @@ async function playYtAudioTrack(t, vid) {
   try {
     await ensureYtPlayer();
     ytPlayer.loadVideoById(vid);
-    armYtStallWatchdog(6000);
+    clearInterval(ytTickTimer);
+    ytTickTimer = setInterval(updateYtProgress, 500);
+    armYtStallWatchdog();
   } catch (e) {
     ytMode = false;
+    clearInterval(ytTickTimer); ytTickTimer = null;
     spNotice('Could not play via YouTube: ' + (e.message || e));
   }
   syncPlayerUI();
