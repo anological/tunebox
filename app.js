@@ -371,14 +371,20 @@ async function playCurrent() {
   recordListen(t.id);
   if (isSpotifyTrack(t)) {
     audio.pause(); // stop any local playback first
-    try {
-      await ensureSpotifyPlayer();
-      await waitFor(() => spDeviceId, 12000);
-      await spPlayUri(t.spotifyUri);
-    } catch (e) {
-      spNotice('Could not start Spotify playback: ' + (e.message || e));
+    await loadSpProfile().catch(() => {});
+    if (spPremium) {
+      try {
+        await ensureSpotifyPlayer();
+        await waitFor(() => spDeviceId, 12000);
+        await spPlayUri(t.spotifyUri);
+      } catch (e) {
+        spNotice('Could not start Spotify playback: ' + (e.message || e));
+      }
+    } else {
+      await playSpotifyViaYouTube(t); // free accounts: same library, audio via YouTube
     }
   } else {
+    stopYt();
     if (spPlayer && spPlaying) spPlayer.pause().catch(() => {});
     spPlaying = false;
     audio.src = t.blobUrl || t.src;
@@ -393,7 +399,8 @@ function togglePlay() {
     setQueue(ids, 0); playCurrent(); return;
   }
   if (currentIsSpotify()) {
-    if (spPlayer) (spPlaying ? spPlayer.pause() : spPlayer.resume()).catch(() => {});
+    if (ytMode && ytPlayer) { ytPlaying ? ytPlayer.pauseVideo() : ytPlayer.playVideo(); }
+    else if (spPlayer) (spPlaying ? spPlayer.pause() : spPlayer.resume()).catch(() => {});
   } else {
     audio.paused ? audio.play().catch(() => {}) : audio.pause();
   }
@@ -401,9 +408,11 @@ function togglePlay() {
 }
 function step(dir) {
   if (!queue.length) return;
-  const pos = currentIsSpotify() ? spPosition / 1000 : audio.currentTime;
+  const yt = ytMode && ytPlayer && currentIsSpotify();
+  const pos = currentIsSpotify() ? (yt ? ytPlayer.getCurrentTime() : spPosition / 1000) : audio.currentTime;
   if (dir < 0 && pos > 3) {
-    if (currentIsSpotify() && spPlayer) spPlayer.seek(0).catch(() => {});
+    if (yt) ytPlayer.seekTo(0, true);
+    else if (currentIsSpotify() && spPlayer) spPlayer.seek(0).catch(() => {});
     else audio.currentTime = 0;
     return;
   }
@@ -429,7 +438,7 @@ audio.addEventListener('pause', syncPlayBtn);
 audio.addEventListener('error', () => step(1));
 
 let seeking = false;
-function isPlaying() { const t = currentTrack(); return t && t.source === 'spotify' ? spPlaying : !audio.paused; }
+function isPlaying() { const t = currentTrack(); return t && t.source === 'spotify' ? (ytMode ? ytPlaying : spPlaying) : !audio.paused; }
 function syncPlayBtn() { $('#play').innerHTML = isPlaying() ? '&#10073;&#10073;' : '&#9654;'; }
 function syncPlayerUI() {
   const t = currentTrack();
@@ -1064,17 +1073,26 @@ async function init() {
   seek.addEventListener('pointerdown', () => seeking = true);
   seek.addEventListener('pointerup', () => seeking = false);
   seek.addEventListener('input', () => {
-    if (currentIsSpotify()) { if (spPlayer && spDuration) spPlayer.seek(Math.round(seek.value / 1000 * spDuration)).catch(() => {}); }
+    if (currentIsSpotify()) {
+      if (ytMode && ytPlayer) { const d = ytPlayer.getDuration(); if (d) ytPlayer.seekTo(seek.value / 1000 * d, true); }
+      else if (spPlayer && spDuration) spPlayer.seek(Math.round(seek.value / 1000 * spDuration)).catch(() => {});
+    }
     else if (audio.duration) audio.currentTime = seek.value / 1000 * audio.duration;
   });
   const vol = $('#volume');
   vol.addEventListener('input', () => {
     const v = vol.value / 100;
-    if (currentIsSpotify() && spPlayer) { spPlayer.setVolume(v).catch(() => {}); spMutedVol = null; $('#mute').innerHTML = '&#128266;'; }
+    if (ytMode && ytPlayer) ytPlayer.setVolume(Math.round(v * 100));
+    else if (currentIsSpotify() && spPlayer) { spPlayer.setVolume(v).catch(() => {}); spMutedVol = null; $('#mute').innerHTML = '&#128266;'; }
     else { audio.volume = v; audio.muted = false; }
   });
   $('#mute').addEventListener('click', () => {
-    if (currentIsSpotify() && spPlayer) {
+    if (ytMode && ytPlayer) {
+      const m = ytPlayer.isMuted();
+      m ? ytPlayer.unMute() : ytPlayer.mute();
+      $('#mute').innerHTML = m ? '&#128266;' : '&#128263;';
+    }
+    else if (currentIsSpotify() && spPlayer) {
       if (spMutedVol === null) spPlayer.getVolume().then(v => { spMutedVol = v; spPlayer.setVolume(0); $('#mute').innerHTML = '&#128263;'; }).catch(() => {});
       else { spPlayer.setVolume(spMutedVol).catch(() => {}); spMutedVol = null; $('#mute').innerHTML = '&#128266;'; }
     } else { audio.muted = !audio.muted; $('#mute').innerHTML = audio.muted ? '&#128263;' : '&#128266;'; }
@@ -1246,6 +1264,7 @@ async function spApi(path, opts = {}) {
 function disconnectSpotify() {
   localStorage.removeItem(LS_SP_TOK);
   if (spPlayer) { spPlayer.disconnect().catch(() => {}); spPlayer = null; }
+  stopYt();
   spDeviceId = null; spReady = false; spPlaying = false; spProfile = null; spPremium = true;
   Object.keys(spotifyTrackCache).forEach(k => delete spotifyTrackCache[k]);
   if (currentIsSpotify()) { audio.pause(); queue = []; qi = -1; syncPlayerUI(); }
@@ -1268,6 +1287,7 @@ function loadSpotifySDK() {
 
 async function ensureSpotifyPlayer() {
   if (spPlayer) return;
+  if (!spPremium) return; // free accounts play through YouTube — no Spotify player needed
   if (!hasTokens()) throw new Error('Connect Spotify first (sidebar → Spotify).');
   await loadSpotifySDK();
   spPlayer = new Spotify.Player({
@@ -1289,13 +1309,15 @@ async function ensureSpotifyPlayer() {
   spPlayer.addListener('account_error', () => {
     spPremium = false;
     if (currentView.name === 'spotify') renderSpotify();
-    spNotice('This Spotify account is not Premium — Spotify requires Premium for in-app playback.');
+    spNotice('No Spotify Premium on this account — your Spotify tracks will play free via YouTube.');
   });
   spPlayer.addListener('playback_error', ({ message }) => spNotice('Spotify playback error: ' + message));
   const ok = await spPlayer.connect();
   if (!ok) throw new Error('could not connect the Spotify player');
   if (!spPollTimer) spPollTimer = setInterval(async () => {
-    if (!spPlayer || !currentIsSpotify()) return;
+    if (!currentIsSpotify()) return;
+    if (ytMode) { updateYtProgress(); return; }
+    if (!spPlayer) return;
     try {
       const s = await spPlayer.getCurrentState();
       if (s) {
@@ -1324,6 +1346,91 @@ async function spPlayUri(uri) {
   });
   if (res.status === 403) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || 'forbidden — Spotify Premium is required'); }
   if (!res.ok && res.status !== 204) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || ('play failed: ' + res.status)); }
+}
+
+/* ----- Free fallback: Spotify tracks play through YouTube when the account isn't Premium -----
+   Spotify login still provides the library (playlists, liked songs, search). Only the audio
+   transport switches: a hidden YouTube IFrame player streams the matched video's audio. */
+let ytApiLoading = null, ytPlayer = null, ytMode = false, ytPlaying = false, ytNoticeShown = false;
+const ytVideoCache = {};
+
+function ensureYtPlayer() {
+  if (ytApiLoading) return ytApiLoading;
+  ytApiLoading = new Promise((res, rej) => {
+    if (window.YT && window.YT.Player) return res();
+    const to = setTimeout(() => rej(new Error('YouTube player timed out — check your connection')), 20000);
+    window.onYouTubeIframeAPIReady = () => { clearTimeout(to); res(); };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => { clearTimeout(to); rej(new Error('Could not load the YouTube player')); };
+    document.head.appendChild(s);
+  }).then(() => {
+    if (ytPlayer) return;
+    const div = document.createElement('div');
+    div.id = 'yt-audio-hidden';
+    div.style.cssText = 'position:fixed;left:-10px;top:-10px;width:4px;height:4px;opacity:0;pointer-events:none;';
+    document.body.appendChild(div);
+    ytPlayer = new YT.Player(div, {
+      width: '4', height: '4',
+      playerVars: { rel: 0 },
+      events: {
+        onReady: () => { try { ytPlayer.setVolume(+($('#volume')?.value || 80)); } catch (e) {} },
+        onStateChange: onYtState,
+        onError: () => { if (ytMode) { spNotice('YouTube could not play this track — skipping.'); step(1); } }
+      }
+    });
+  });
+  return ytApiLoading;
+}
+
+function onYtState(e) {
+  if (!ytMode || !window.YT) return;
+  ytPlaying = e.data === YT.PlayerState.PLAYING;
+  if (e.data === YT.PlayerState.ENDED) {
+    if (repeatMode === 'one') { const t = currentTrack(); if (t) playSpotifyViaYouTube(t); }
+    else step(1);
+  }
+  syncPlayBtn();
+}
+
+function stopYt() {
+  ytMode = false; ytPlaying = false;
+  try { if (ytPlayer && ytPlayer.pauseVideo) ytPlayer.pauseVideo(); } catch (e) {}
+}
+
+function updateYtProgress() {
+  if (!ytMode || !ytPlayer) return;
+  try {
+    const pos = ytPlayer.getCurrentTime() || 0, dur = ytPlayer.getDuration() || 0;
+    $('#t-cur').textContent = fmt(pos);
+    if (dur) $('#t-dur').textContent = fmt(dur);
+    if (!seeking && dur) $('#seek').value = Math.round(pos / dur * 1000);
+  } catch (e) { /* transient */ }
+}
+
+async function playSpotifyViaYouTube(t) {
+  ytMode = true;
+  if (spPlayer && spPlaying) spPlayer.pause().catch(() => {});
+  spPlaying = false;
+  audio.pause();
+  try {
+    await ensureYtPlayer();
+    let vid = ytVideoCache[t.id];
+    if (!vid) {
+      const res = await fetch(backendUrl() + '/api/yt/search?' + new URLSearchParams({ q: `${t.title} ${t.artist} audio` }));
+      if (!res.ok) throw new Error('music search is unreachable right now');
+      const items = await res.json();
+      if (!items.length) throw new Error('no match found on YouTube');
+      vid = items[0].id;
+      ytVideoCache[t.id] = vid;
+    }
+    ytPlayer.loadVideoById(vid);
+    if (!ytNoticeShown) { ytNoticeShown = true; toast('No Spotify Premium — playing your Spotify tracks free via YouTube.'); }
+  } catch (e) {
+    ytMode = false;
+    spNotice('Could not play via YouTube: ' + (e.message || e));
+  }
+  syncPlayerUI();
 }
 
 function onSpotifyState(state) {
@@ -1368,7 +1475,7 @@ function spTrack(item, fallbackImg) {
 function spSetupHTML() {
   return `<div class="greeting">Connect Spotify</div>
   <div class="sp-panel">
-    <p>Play the full Spotify catalog inside Tunebox. You need a <b>Spotify Premium</b> account and a free Client ID.</p>
+    <p>Connect your Spotify to browse your playlists, liked songs and the catalog inside Tunebox. <b>Premium</b> unlocks Spotify's native player; without it, tracks play free through YouTube.</p>
     <ol class="sp-steps">
       <li>Open <b>developer.spotify.com/dashboard</b> and log in with your Spotify account.</li>
       <li>Click <b>Create app</b>, give it any name, then open <b>Settings</b>.</li>
@@ -1386,7 +1493,7 @@ function spConnectHTML() {
   return `<div class="greeting">Spotify</div>
   <div class="sp-panel">
     <p>Your Client ID is saved. Connect your Spotify account to browse and play the full catalog inside Tunebox.</p>
-    <p class="sp-note">Requires <b>Spotify Premium</b> — Spotify's player only works on Premium accounts.</p>
+    <p class="sp-note"><b>Premium</b> enables Spotify's native in-app player. Without Premium, your Spotify tracks play free via YouTube — everything else works the same.</p>
     <p class="sp-note">If Spotify shows <b>"Access denied"</b> after you log in, the Tunebox app is still in development mode — its owner needs to add your Spotify email under Users and Access in the Spotify dashboard. Nothing is broken on your end.</p>
     <div class="sp-row"><button id="sp-connect" class="sp-btn big">Connect Spotify</button></div>
     ${spAuthError ? `<div class="sp-notice err">${esc(spAuthError)}</div>` : ''}
@@ -1418,7 +1525,7 @@ async function renderSpotify() {
       <span class="sp-user" id="sp-user">${spProfile ? esc(spProfile.display_name || spProfile.email || '') : ''}</span>
       <button id="sp-disconnect" class="ghost-btn">Disconnect</button>
     </div>
-    ${spPremium ? '' : `<div class="sp-notice err">This Spotify account is not Premium. Spotify only allows in-app playback for Premium accounts — your local library keeps working as normal.</div>`}
+    ${spPremium ? '' : `<div class="sp-notice">No Spotify Premium on this account — your Spotify playlists, liked songs and search all work, and tracks play free through YouTube. Tap any track to play.</div>`}
     <div class="sp-tabs">
       <button class="sp-tab ${st.tab === 'playlists' && !st.playlistId ? 'on' : ''}" data-sptab="playlists">Playlists</button>
       <button class="sp-tab ${st.tab === 'liked' ? 'on' : ''}" data-sptab="liked">Liked Songs</button>
@@ -1988,6 +2095,7 @@ function renderFreeYouTube() {
 }
 
 function ytShowPlayer(id, title, channel, target) {
+  stopYt(); // don't double-play if a Spotify track was streaming via the hidden YouTube audio player
   const host = document.getElementById(target || 'yt-player');
   if (!host) return;
   host.innerHTML = `
