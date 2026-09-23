@@ -292,6 +292,19 @@ export default {
       return json(slimSearch(await yt.json()), 200, cors);
     }
 
+    if (url.pathname === '/api/yt/related') {
+      const videoId = (url.searchParams.get('videoId') || '').trim().slice(0, 20);
+      if (!videoId) return json({ error: 'Missing ?videoId=' }, 400, cors);
+      if (!quotaOk(100)) return json({ error: 'Daily YouTube quota reached — try again tomorrow.' }, 429, cors);
+      const sp = new URLSearchParams({
+        part: 'snippet', type: 'video', videoCategoryId: '10',
+        maxResults: '10', relatedToVideoId: videoId, key: env.YT_API_KEY,
+      });
+      const yt = await fetch('https://www.googleapis.com/youtube/v3/search?' + sp.toString());
+      if (!yt.ok) return json({ error: 'YouTube error ' + yt.status }, 502, cors);
+      return json(slimSearch(await yt.json()), 200, cors);
+    }
+
     /* ---- Status page ---- */
     if (url.pathname === '/') {
       const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
