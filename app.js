@@ -275,7 +275,7 @@ function renderSidebar() {
 /* ---------------- Rendering: views ---------------- */
 function trackRow(t, i, ctxIds) {
   const isLiked = liked.has(t.id);
-  const dl = t.src ? `<button class="dl-btn" data-dl="${t.id}" title="Download audio file">&#8681;</button>` : '';
+  const dl = (t.blobUrl || t.src) ? `<button class="dl-btn" data-dl="${t.id}" title="Download audio file">&#8681;</button>` : '';
   return `<tr class="track-row" data-id="${t.id}">
     <td><button class="row-play">${i + 1}</button></td>
     <td><div class="t-cell">${coverHTML(t, 't-cover')}
@@ -292,22 +292,25 @@ function trackRow(t, i, ctxIds) {
    offers a legal free download, so no button is shown for them. */
 async function downloadTrack(id) {
   const t = trackById(id);
-  if (!t || !t.src) return;
-  const base = t.src.split('?')[0].split('#')[0];
+  const srcUrl = t && (t.blobUrl || t.src);
+  if (!srcUrl) return;
+  const base = srcUrl.split('?')[0].split('#')[0];
   const ext0 = (base.split('.').pop() || '').toLowerCase();
-  const ext = ['mp3', 'wav', 'ogg', 'oga', 'flac', 'm4a', 'opus', 'webm'].includes(ext0) ? ext0 : 'mp3';
-  const name = `${t.artist} - ${t.title}.${ext}`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+  const extFromUrl = ['mp3', 'wav', 'ogg', 'oga', 'flac', 'm4a', 'opus', 'webm'].includes(ext0) ? ext0 : null;
+  const extFromType = { 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg', 'audio/flac': 'flac', 'audio/mp4': 'm4a', 'audio/aac': 'm4a', 'audio/webm': 'webm', 'audio/opus': 'opus' };
   try {
-    const res = await fetch(t.src);
+    const res = await fetch(srcUrl);
     if (!res.ok) throw new Error('fetch failed');
     const blob = await res.blob();
+    const ext = extFromUrl || extFromType[blob.type] || 'mp3';
+    const name = `${t.artist} - ${t.title}.${ext}`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 8000);
   } catch (e) {
-    window.open(t.src, '_blank'); // fallback: let the browser save or play it
+    window.open(srcUrl, '_blank'); // fallback: let the browser save or play it
   }
 }
 function bindTrackRows(ctxIds) {
