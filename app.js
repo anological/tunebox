@@ -1149,11 +1149,16 @@ const loadTokens = () => { try { return JSON.parse(localStorage.getItem(LS_SP_TO
 const saveTokens = t => localStorage.setItem(LS_SP_TOK, JSON.stringify(t));
 const hasTokens = () => !!loadTokens()?.access_token;
 /* Redirect URI must exactly match one registered in the Spotify dashboard.
-   Spotify rejects the "localhost" hostname, so local dev uses the explicit loopback IP. */
+   Spotify rejects the "localhost" hostname, so local dev uses the explicit loopback IP.
+   The URI is normalized (index.html stripped, trailing slash enforced) so it is
+   identical no matter which URL variant of the app the user opened. */
 const redirectUri = () => {
   const h = window.location.hostname;
   if (h === 'localhost' || h === '127.0.0.1' || h === '[::1]') return 'http://127.0.0.1:8000';
-  return window.location.origin + window.location.pathname;
+  let p = window.location.pathname;
+  if (p.endsWith('index.html')) p = p.slice(0, -'index.html'.length);
+  if (!p.endsWith('/')) p += '/';
+  return window.location.origin + p;
 };
 
 /* ----- PKCE ----- */
