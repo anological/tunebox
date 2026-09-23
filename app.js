@@ -745,6 +745,7 @@ async function renderHome() {
       <div class="section-title">Trending on YouTube</div>
       <div class="skel-row">${'<div class="skel-thumb"><div class="skel skel-cover"></div><div class="skel skel-line"></div><div class="skel skel-line short"></div></div>'.repeat(5)}</div>
     </div>
+    <div id="home-recs"></div>
     <div class="section-title">All tracks</div>
     ${trackTable(library.map(t => t.id))}`;
   bindCards(); bindTrackRows(library.map(t => t.id));
@@ -778,6 +779,26 @@ async function renderHome() {
       freeSource = 'youtube'; go('free');
     }));
   } catch (e) { const box = $('#home-yt'); if (box) box.innerHTML = ''; }
+  // Recommended for you — YouTube's algorithm, seeded from your taste (fails silently)
+  try {
+    const recs = await ytRecommendations();
+    const box = $('#home-recs');
+    if (!box) return;
+    if (!recs.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="section-title">Recommended for you</div>
+      <div class="sp-note" style="margin:-6px 0 10px">YouTube picks based on your listening taste.</div>
+      <div class="trend-row">` +
+      recs.map(v => `
+        <button class="trend-card" data-vid="${v.id}" data-title="${esc(v.title || 'YouTube video')}" data-channel="${esc(v.channel || '')}">
+          ${v.thumb ? `<img src="${esc(v.thumb)}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), '')}
+          <div class="t-title">${esc(v.title || 'YouTube video')}</div>
+          <div class="t-artist">${esc(v.channel || '')}</div>
+        </button>`).join('') + `</div>`;
+    box.querySelectorAll('.trend-card').forEach(b => b.addEventListener('click', () => {
+      ytPendingPlay = { id: b.dataset.vid, title: b.dataset.title, channel: b.dataset.channel };
+      freeSource = 'youtube'; go('free');
+    }));
+  } catch (e) { const box = $('#home-recs'); if (box) box.innerHTML = ''; }
 }
 function bindCards() {
   document.querySelectorAll('[data-pl]').forEach(c => c.addEventListener('click', e => {
@@ -1018,6 +1039,7 @@ async function handleFiles(files) {
 /* ---------------- Wire up ---------------- */
 async function init() {
   loadLS(); loadAuCache(); loadIaCache(); seedPlaylists(); renderSidebar(); renderQueue();
+  ensureBackend().catch(() => {}); // drop dead custom backend URLs before anything uses them
   document.querySelectorAll('.nav-item').forEach(n => n.addEventListener('click', () => go(n.dataset.view)));
   $('#back').addEventListener('click', () => navHist(-1));
   $('#fwd').addEventListener('click', () => navHist(1));
@@ -1360,6 +1382,7 @@ function spConnectHTML() {
   <div class="sp-panel">
     <p>Your Client ID is saved. Connect your Spotify account to browse and play the full catalog inside Tunebox.</p>
     <p class="sp-note">Requires <b>Spotify Premium</b> — Spotify's player only works on Premium accounts.</p>
+    <p class="sp-note">If Spotify shows <b>"Access denied"</b> after you log in, the Tunebox app is still in development mode — its owner needs to add your Spotify email under Users and Access in the Spotify dashboard. Nothing is broken on your end.</p>
     <div class="sp-row"><button id="sp-connect" class="sp-btn big">Connect Spotify</button></div>
     ${spAuthError ? `<div class="sp-notice err">${esc(spAuthError)}</div>` : ''}
     <div class="sp-row"><button id="sp-change-id" class="ghost-btn">Use a different Client ID</button></div>
@@ -1870,6 +1893,21 @@ function backendCustom() {
 function backendSave(u) {
   try { localStorage.setItem(BE_LS, String(u || '').trim().replace(/\/+$/, '')); } catch (e) { /* storage unavailable */ }
 }
+/* Self-healing: if a saved custom backend URL is dead, drop it and fall back
+   to the built-in backend instead of silently breaking YouTube features. */
+async function ensureBackend() {
+  const custom = backendCustom();
+  if (!custom) return;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 6000);
+    const res = await fetch(custom + '/api/yt/trending', { signal: ctl.signal });
+    clearTimeout(t);
+    if (res.ok) return; // custom backend is alive — keep it
+  } catch (e) { /* unreachable */ }
+  try { localStorage.removeItem(BE_LS); } catch (e) { /* storage unavailable */ }
+  toast('Saved backend address was unreachable — switched back to the built-in one.');
+}
 function ytExtractId(input) {
   const s = String(input || '').trim();
   if (!s) return null;
@@ -1883,7 +1921,7 @@ function renderFreeYouTube() {
   const customBe = backendCustom();
   $('#free-body').innerHTML = `
     <p class="sp-note">Plays through YouTube's official player — artists keep their revenue.</p>
-    <div class="yt-status"><span class="dot"></span>Connected — search and trending are on</div>
+    <div class="yt-status" id="yt-be-status"><span class="dot"></span>Checking backend…</div>
     <details class="adv">
       <summary>Advanced</summary>
       <div class="yt-keyrow">
@@ -1922,6 +1960,26 @@ function renderFreeYouTube() {
     $('#yt-content').innerHTML = '';
     ytShowPlayer(p.id, p.title, p.channel);
   }
+
+  // Real backend health check — the badge only claims "Connected" when the server answers.
+  (async () => {
+    const el = $('#yt-be-status');
+    if (!el) return;
+    const be = backendUrl();
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 6000);
+      const res = await fetch(be + '/api/yt/trending', { signal: ctl.signal });
+      clearTimeout(t);
+      if (!res.ok) throw new Error('bad status');
+      el.innerHTML = '<span class="dot"></span>Connected — search and trending are on';
+    } catch (e) {
+      el.innerHTML = '<span class="dot" style="background:#f85149;box-shadow:0 0 12px #f85149"></span>' +
+        'Can\'t reach the backend — <button id="be-reset2" class="ghost-btn" style="margin-left:8px">Reset to built-in</button>';
+      const r = $('#be-reset2');
+      if (r) r.addEventListener('click', () => { backendSave(''); renderFree(); });
+    }
+  })();
 }
 
 function ytShowPlayer(id, title, channel, target) {
@@ -1947,5 +2005,47 @@ async function ytTrending() {
   if (!res.ok) throw new Error('Backend error ' + res.status);
   ytTrendCache = await res.json();
   return ytTrendCache;
+}
+
+/* "Recommended for you": YouTube's own search ranking, seeded from your taste.
+ * Takes your top artists (from likes + play history) and favourite genres,
+ * asks YouTube's algorithm for each, and merges the results. Cached 6h in
+ * localStorage so it costs ~3 API calls per refresh, not per home visit. */
+const YT_RECS_LS = 'tunebox.yt.recs';
+async function ytRecommendations() {
+  try {
+    const c = JSON.parse(localStorage.getItem(YT_RECS_LS) || 'null');
+    if (c && Date.now() - c.at < 6 * 3600_000 && c.items && c.items.length) return c.items;
+  } catch (e) { /* no usable cache */ }
+  const be = backendUrl();
+  if (!be) return [];
+  const artistScore = {};
+  const addArtist = (t, w) => {
+    const a = String(t.artist || '').split(/[,&]/)[0].trim();
+    if (a && a.toLowerCase() !== 'unknown') artistScore[a] = (artistScore[a] || 0) + w;
+  };
+  liked.forEach(id => { const t = trackById(id); if (t) addArtist(t, 3); });
+  listenLog.forEach(id => { const t = trackById(id); if (t) addArtist(t, 1); });
+  const artists = Object.entries(artistScore).sort((a, b) => b[1] - a[1]).slice(0, 2).map(e => e[0]);
+  const tags = tasteProfile().slice(0, 2).map(e => e[0]);
+  const queries = [...artists.map(a => a + ' songs'), ...tags.map(g => g + ' music')].slice(0, 3);
+  if (!queries.length) return [];
+  const seen = new Set(), out = [];
+  for (const q of queries) {
+    try {
+      const res = await fetch(be + '/api/yt/search?' + new URLSearchParams({ q }));
+      if (!res.ok) continue;
+      const items = await res.json();
+      for (const v of items) {
+        if (!v || !v.id || seen.has(v.id)) continue;
+        seen.add(v.id);
+        out.push({ id: v.id, title: v.title, channel: v.channel, thumb: v.thumb, seed: q });
+        if (out.length >= 12) break;
+      }
+    } catch (e) { /* one failed seed must not kill the rest */ }
+    if (out.length >= 12) break;
+  }
+  try { localStorage.setItem(YT_RECS_LS, JSON.stringify({ at: Date.now(), items: out })); } catch (e) { /* storage unavailable */ }
+  return out;
 }
 
