@@ -401,3 +401,8 @@ img.pl-big-cover { object-fit: cover; }
   .sp-panel { padding: 18px; }
   .cat-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* Download buttons on track rows */
+.row-actions { white-space: nowrap; }
+.dl-btn { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 8px; }
+.dl-btn:hover { color: var(--text); background: rgba(255,255,255,.08); }

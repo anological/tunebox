@@ -264,26 +264,54 @@ function renderSidebar() {
 /* ---------------- Rendering: views ---------------- */
 function trackRow(t, i, ctxIds) {
   const isLiked = liked.has(t.id);
+  const dl = t.src ? `<button class="dl-btn" data-dl="${t.id}" title="Download audio file">&#8681;</button>` : '';
   return `<tr class="track-row" data-id="${t.id}">
     <td><button class="row-play">${i + 1}</button></td>
     <td><div class="t-cell">${coverHTML(t, 't-cover')}
       <div><div class="t-title">${esc(t.title)}</div><div class="t-artist">${esc(t.artist)}</div></div></div></td>
     <td class="t-album">${esc(t.album || '—')}</td>
     <td class="t-dur">${fmt(t.duration)}</td>
-    <td><button class="like-btn ${isLiked ? 'liked' : ''}" data-like="${t.id}">${isLiked ? '&#9829;' : '&#9825;'}</button></td>
+    <td class="row-actions">${dl}<button class="like-btn ${isLiked ? 'liked' : ''}" data-like="${t.id}">${isLiked ? '&#9829;' : '&#9825;'}</button></td>
   </tr>`;
+}
+
+/* Free, legal downloads: every track with a direct audio file (your library,
+   uploads, Audius, Internet Archive) can be saved. Spotify tracks play only
+   inside Spotify, and YouTube videos play in YouTube's own player — neither
+   offers a legal free download, so no button is shown for them. */
+async function downloadTrack(id) {
+  const t = trackById(id);
+  if (!t || !t.src) return;
+  const base = t.src.split('?')[0].split('#')[0];
+  const ext0 = (base.split('.').pop() || '').toLowerCase();
+  const ext = ['mp3', 'wav', 'ogg', 'oga', 'flac', 'm4a', 'opus', 'webm'].includes(ext0) ? ext0 : 'mp3';
+  const name = `${t.artist} - ${t.title}.${ext}`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+  try {
+    const res = await fetch(t.src);
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+  } catch (e) {
+    window.open(t.src, '_blank'); // fallback: let the browser save or play it
+  }
 }
 function bindTrackRows(ctxIds) {
   document.querySelectorAll('.track-row').forEach(r => {
     const id = r.dataset.id;
     r.addEventListener('click', e => {
-      if (e.target.closest('[data-like]')) return;
+      if (e.target.closest('[data-like]') || e.target.closest('[data-dl]')) return;
       playTrackById(id, ctxIds);
     });
     r.addEventListener('dblclick', () => addToPlaylist(id));
   });
   document.querySelectorAll('[data-like]').forEach(b =>
     b.addEventListener('click', e => { e.stopPropagation(); toggleLike(b.dataset.like); }));
+  document.querySelectorAll('[data-dl]').forEach(b =>
+    b.addEventListener('click', e => { e.stopPropagation(); downloadTrack(b.dataset.dl); }));
 }
 
 function playlistHeader(p, ids) {
@@ -1233,7 +1261,7 @@ async function renderFreeAudius() {
       <button class="ghost-btn au-genre ${!auGenre ? 'on' : ''}" data-g="">All</button>
       ${AU_GENRES.map(g => `<button class="ghost-btn au-genre ${auGenre === g ? 'on' : ''}" data-g="${esc(g)}">${esc(g)}</button>`).join('')}
     </div>
-    <div class="uni-hint">Tip: the search bar at the top searches Audius along with Spotify, YouTube and the Archive.</div>
+    <div class="uni-hint">Tip: the search bar at the top searches Audius along with Spotify, YouTube and the Archive. Hit the &#8681; button on any track to save it as an audio file, free.</div>
     <div id="au-content"><div class="empty">Loading…</div></div>`;
   document.querySelectorAll('.au-genre').forEach(b => b.addEventListener('click', () => {
     auGenre = b.dataset.g; renderFree();
@@ -1348,7 +1376,7 @@ async function iaLoadItem(id) {
 async function renderFreeArchive() {
   if (iaItemId) { await renderIaDetail(); return; }
   $('#free-body').innerHTML = `
-    <div class="uni-hint">Tip: the search bar at the top searches the Archive along with Spotify, YouTube and Audius.</div>
+    <div class="uni-hint">Tip: the search bar at the top searches the Archive along with Spotify, YouTube and Audius. Hit the &#8681; button on any track to save it as an audio file, free.</div>
     <div id="ia-content"><div class="empty">Loading…</div></div>`;
   await loadIaResults();
 }
