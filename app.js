@@ -1436,30 +1436,56 @@ const ytVideoCache = {};
 
 function ensureYtPlayer() {
   if (ytApiLoading) return ytApiLoading;
-  ytApiLoading = new Promise((res, rej) => {
+  const p = new Promise((res, rej) => {
     if (window.YT && window.YT.Player) return res();
     const to = setTimeout(() => rej(new Error('YouTube player timed out — check your connection')), 20000);
-    window.onYouTubeIframeAPIReady = () => { clearTimeout(to); res(); };
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      clearTimeout(to);
+      try { if (typeof prev === 'function') prev(); } catch (e) {}
+      res();
+    };
     const s = document.createElement('script');
     s.src = 'https://www.youtube.com/iframe_api';
     s.onerror = () => { clearTimeout(to); rej(new Error('Could not load the YouTube player')); };
     document.head.appendChild(s);
-  }).then(() => {
-    if (ytPlayer) return;
+  }).then(() => new Promise((res, rej) => {
+    // Reuse a working player; rebuild if a previous attempt left a broken one
+    // (e.g. an adblocker-supplied stub without real player methods).
+    if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') return res();
+    ytPlayer = null;
     const div = document.createElement('div');
     div.id = 'yt-audio-hidden';
     div.style.cssText = 'position:fixed;left:-10px;top:-10px;width:4px;height:4px;opacity:0;pointer-events:none;';
     document.body.appendChild(div);
-    ytPlayer = new YT.Player(div, {
-      width: '4', height: '4',
-      playerVars: { rel: 0 },
-      events: {
-        onReady: () => { try { ytPlayer.setVolume(+($('#volume')?.value || 80)); } catch (e) {} },
-        onStateChange: onYtState,
-        onError: () => { if (ytMode) { spNotice('YouTube could not play this track — skipping.'); step(1); } }
-      }
-    });
-  });
+    const to = setTimeout(() => { ytPlayer = null; rej(new Error('YouTube player did not start — it may be blocked by an adblocker or extension')); }, 15000);
+    try {
+      ytPlayer = new YT.Player(div, {
+        width: '4', height: '4',
+        playerVars: { rel: 0 },
+        events: {
+          onReady: () => {
+            if (!ytPlayer || typeof ytPlayer.loadVideoById !== 'function') {
+              clearTimeout(to); ytPlayer = null;
+              rej(new Error('YouTube player failed to initialize — it may be blocked by an adblocker or extension'));
+              return;
+            }
+            clearTimeout(to);
+            try { ytPlayer.setVolume(+($('#volume')?.value || 80)); } catch (e) {}
+            res();
+          },
+          onStateChange: onYtState,
+          onError: () => { if (ytMode) { spNotice('YouTube could not play this track — skipping.'); step(1); } }
+        }
+      });
+    } catch (e) {
+      clearTimeout(to); ytPlayer = null;
+      rej(new Error('Could not create the YouTube player'));
+    }
+  }));
+  ytApiLoading = p;
+  // Let later attempts retry instead of reusing a failed promise.
+  p.catch(() => { if (ytApiLoading === p) ytApiLoading = null; });
   return ytApiLoading;
 }
 
