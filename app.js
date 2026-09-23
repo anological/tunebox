@@ -1576,11 +1576,13 @@ async function renderIaDetail() {
 /* ---------------- Free music source 3: YouTube via official embeds (no ripping) ---------------- */
 /* YouTube search & trending now run through the Tunebox backend (backend/worker.js),
    so the YouTube API key lives on the server and never appears in this file.
-   Deploy the free backend once, then paste its URL in the Free Music → YouTube tab. */
+   BE_DEFAULT is the deployed backend; a custom URL can still be saved in the
+   Free Music → YouTube tab (stored in localStorage). */
 const BE_LS = 'tunebox.backend';
+const BE_DEFAULT = 'https://tunebox-api.rahulgabagpt2.workers.dev';
 function backendUrl() {
-  try { return (localStorage.getItem(BE_LS) || '').trim().replace(/\/+$/, ''); }
-  catch (e) { return ''; }
+  try { return ((localStorage.getItem(BE_LS) || BE_DEFAULT).trim().replace(/\/+$/, '')); }
+  catch (e) { return BE_DEFAULT; }
 }
 function backendSave(u) {
   try { localStorage.setItem(BE_LS, String(u || '').trim().replace(/\/+$/, '')); } catch (e) { /* storage unavailable */ }
@@ -1603,7 +1605,7 @@ function renderFreeYouTube() {
       <button id="be-save" class="ghost-btn">Save</button>
       ${be ? '<button id="be-clear" class="ghost-btn">Clear</button>' : ''}
     </div>
-    <p class="yt-hint">The free backend (the <b>backend</b> folder in the project) keeps the YouTube API key on a server instead of inside this page. Deploy it once on Cloudflare's free tier, paste its URL here.</p>
+    <p class="yt-hint">The backend is pre-configured and keeps the YouTube API key on a server instead of inside this page. You can replace the URL above if you ever deploy your own.</p>
     <div class="uni-hint" style="margin:14px 0 4px">Tip: use the search bar at the top — it searches YouTube, Spotify, Audius and the Archive all at once.</div>
     <div class="yt-keyrow" style="margin-bottom:16px;max-width:520px">
       <input id="yt-link" class="sp-input" placeholder="Or paste a YouTube link / video ID…" autocomplete="off">
