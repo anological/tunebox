@@ -181,19 +181,20 @@ const skelTracks = n => `<table class="track-table"><tbody>${(
  * Sign in with Google → the backend verifies the ID token, sets a session
  * cookie, and /api/sync keeps playlists, likes and history on your account.
  * Uploaded audio files stay on the device they were added on. */
-const GOOGLE_CLIENT_ID = 'PASTE_GOOGLE_OAUTH_CLIENT_ID_HERE';
+const GOOGLE_CLIENT_ID = '692454145473-ogvm1sco5ui44i5r49vt6e0oj2o4ghr5.apps.googleusercontent.com';
 const LS_DELETED = 'tunebox.deleted';
 let tbUser = null;       // {id, email, name, picture} when signed in
 let deletedPls = {};     // playlist tombstones {id: timestamp}
 let syncing = false, syncDirty = false, syncTimer = null;
 
 async function tbApi(path, opts = {}) {
-  const res = await fetch(backendUrl() + path, {
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  if (res.status === 401 && tbUser) { tbUser = null; renderAuthArea(); }
+  const token = localStorage.getItem('tb_session');
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const res = await fetch(backendUrl() + path, { ...opts, headers });
+  if (res.status === 401 && tbUser) {
+    tbUser = null; localStorage.removeItem('tb_session'); renderAuthArea();
+  }
   return res;
 }
 
@@ -242,7 +243,9 @@ async function onGoogleCredential(resp) {
       method: 'POST', body: JSON.stringify({ credential: resp.credential }),
     });
     if (!r.ok) throw new Error(((await r.json()).error || 'Sign-in failed').replace(/^Sign-in failed: /, ''));
-    tbUser = (await r.json()).user;
+    const data = await r.json();
+    tbUser = data.user;
+    if (data.token) localStorage.setItem('tb_session', data.token);
     closeModal(); renderAuthArea();
     toast(`Signed in as ${tbUser.name || tbUser.email}`);
     syncDirty = true; syncNow();
@@ -251,7 +254,7 @@ async function onGoogleCredential(resp) {
 
 async function signOut() {
   try { await tbApi('/api/auth/logout', { method: 'POST' }); } catch (e) { /* offline */ }
-  tbUser = null; renderAuthArea(); toast('Signed out');
+  tbUser = null; localStorage.removeItem('tb_session'); renderAuthArea(); toast('Signed out');
 }
 
 function openAccountMenu() {

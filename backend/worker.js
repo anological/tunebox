@@ -143,17 +143,19 @@ function newToken() {
   crypto.getRandomValues(b);
   return [...b].map(x => x.toString(16).padStart(2, '0')).join('');
 }
-const sessionCookie = token =>
-  `tb_session=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${SESSION_DAYS * 86400}`;
-const clearSessionCookie = () =>
-  'tb_session=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0';
+// Sessions: the frontend sends the token as `Authorization: Bearer <token>`.
+// (Cross-site cookies are blocked by some browsers, so we don't rely on cookies.)
+function bearerToken(req) {
+  const h = req.headers.get('Authorization') || '';
+  const m = h.match(/^Bearer\s+(\S+)$/i);
+  return m ? m[1] : null;
+}
 async function sessionUser(req, env) {
-  const cookie = req.headers.get('Cookie') || '';
-  const m = cookie.match(/(?:^|;\s*)tb_session=([a-f0-9]{64})/);
-  if (!m) return null;
+  const token = bearerToken(req);
+  if (!token) return null;
   const row = await env.DB.prepare(
     'SELECT user_id, expires_at FROM sessions WHERE token_hash = ?')
-    .bind(await sha256hex(m[1])).first();
+    .bind(await sha256hex(token)).first();
   if (!row || row.expires_at < Date.now()) return null;
   return env.DB.prepare('SELECT id, email, name, picture FROM users WHERE id = ?')
     .bind(row.user_id).first();
@@ -193,7 +195,7 @@ export default {
         .bind(await sha256hex(token), claims.sub, now, now + SESSION_DAYS * 86400_000).run();
       const user = await env.DB.prepare('SELECT id, email, name, picture FROM users WHERE id = ?')
         .bind(claims.sub).first();
-      return json({ user }, 200, { ...cors, 'Set-Cookie': sessionCookie(token) });
+      return json({ user, token }, 200, cors);
     }
 
     if (url.pathname === '/api/auth/me' && req.method === 'GET') {
@@ -205,11 +207,10 @@ export default {
 
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
       if (!env.DB) return json({ error: 'Server misconfigured: D1 database not bound' }, 500, cors);
-      const cookie = req.headers.get('Cookie') || '';
-      const m = cookie.match(/(?:^|;\s*)tb_session=([a-f0-9]{64})/);
-      if (m) await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?')
-        .bind(await sha256hex(m[1])).run();
-      return json({ ok: true }, 200, { ...cors, 'Set-Cookie': clearSessionCookie() });
+      const token = bearerToken(req);
+      if (token) await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?')
+        .bind(await sha256hex(token)).run();
+      return json({ ok: true }, 200, cors);
     }
 
     if (url.pathname === '/api/sync' && (req.method === 'GET' || req.method === 'POST')) {

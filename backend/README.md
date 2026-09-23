@@ -59,7 +59,7 @@ the worker secret, and delete the old one.
 - `GET /api/yt/search?q=...` — YouTube music-video search (slim JSON back)
 - `GET /api/yt/trending` — most-popular music videos, cached 1 hour
 - `POST /api/auth/google` · `GET /api/auth/me` · `POST /api/auth/logout` —
-  Google Sign-In (ID token verified server-side, session in D1, HttpOnly cookie)
+  Google Sign-In (ID token verified server-side, session in D1, Bearer token returned to the app)
 - `GET /api/sync` · `POST /api/sync` — per-user cloud library
   (playlists, liked songs, listening history; uploaded audio stays on-device)
 - Guards: 30 requests/minute per visitor, plus a daily YouTube quota budget
