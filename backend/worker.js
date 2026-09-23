@@ -294,15 +294,32 @@ export default {
 
     if (url.pathname === '/api/yt/related') {
       const videoId = (url.searchParams.get('videoId') || '').trim().slice(0, 20);
+      const title = (url.searchParams.get('title') || '').trim().slice(0, 80);
+      const artist = (url.searchParams.get('artist') || '').trim().slice(0, 80);
       if (!videoId) return json({ error: 'Missing ?videoId=' }, 400, cors);
       if (!quotaOk(100)) return json({ error: 'Daily YouTube quota reached — try again tomorrow.' }, 429, cors);
+      const key = env.YT_API_KEY;
+      // 1) Try YouTube's own related-video graph (category filter omitted: it can
+      //    make the relatedToVideoId combination invalid).
       const sp = new URLSearchParams({
-        part: 'snippet', type: 'video', videoCategoryId: '10',
-        maxResults: '10', relatedToVideoId: videoId, key: env.YT_API_KEY,
+        part: 'snippet', type: 'video',
+        maxResults: '10', relatedToVideoId: videoId, key,
       });
-      const yt = await fetch('https://www.googleapis.com/youtube/v3/search?' + sp.toString());
-      if (!yt.ok) return json({ error: 'YouTube error ' + yt.status }, 502, cors);
-      return json(slimSearch(await yt.json()), 200, cors);
+      let yt = await fetch('https://www.googleapis.com/youtube/v3/search?' + sp.toString());
+      let items = yt.ok ? slimSearch(await yt.json()).filter(v => v.id !== videoId) : [];
+      // 2) Fallback: refined search around the seed's title/artist.
+      if (!items.length && (title || artist)) {
+        if (!quotaOk(100)) return json({ error: 'Daily YouTube quota reached — try again tomorrow.' }, 429, cors);
+        const q = (artist + ' ' + title).trim().slice(0, 100);
+        const sp2 = new URLSearchParams({
+          part: 'snippet', type: 'video', videoCategoryId: '10',
+          maxResults: '12', q, key,
+        });
+        yt = await fetch('https://www.googleapis.com/youtube/v3/search?' + sp2.toString());
+        if (yt.ok) items = slimSearch(await yt.json()).filter(v => v.id !== videoId);
+      }
+      if (!items.length && !yt.ok) return json({ error: 'YouTube error ' + yt.status }, 502, cors);
+      return json(items.slice(0, 10), 200, cors);
     }
 
     /* ---- Status page ---- */
