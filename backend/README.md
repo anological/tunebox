@@ -11,15 +11,33 @@ app's JavaScript. It runs on Cloudflare Workers (free tier, no credit card).
 3. Click **Edit code**, delete everything in the editor, and paste the entire
    contents of `worker.js` from this folder. Click **Deploy** (top right).
 
-## 2. Add your YouTube API key as a secret
+## 2. Add your secrets and variables
 
-1. In the worker's page: **Settings** tab → **Variables and Secrets** →
-   **Add** (under Secrets).
-2. Name: `YT_API_KEY`
-   Value: your YouTube Data API v3 key (the one from Google Cloud Console).
-3. Save. (Redeploy if it asks — the secret is never shown again, even to you.)
+1. In the worker's page: **Settings** tab → **Variables and Secrets**.
+2. Under **Secrets**, add:
+   - Name: `YT_API_KEY` — Value: your YouTube Data API v3 key.
+3. Under **Variables** (plain text), add:
+   - Name: `GOOGLE_CLIENT_ID` — Value: your Google OAuth client ID
+     (Google Cloud Console → APIs & Services → Credentials → OAuth client ID,
+     type Web application, authorized JavaScript origin
+     `https://anological.github.io`).
 
-## 3. Connect Tunebox to it
+## 3. Add the D1 database (for accounts + sync)
+
+1. Cloudflare dashboard → **Storage & Databases** → **D1 SQL database** →
+   **Create** → name it `tunebox-db`.
+2. Open the `tunebox-db` database → **Console** tab → run this schema:
+   ```sql
+   CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, name TEXT, picture TEXT, created_at INTEGER, updated_at INTEGER);
+   CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER, expires_at INTEGER);
+   CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+   CREATE TABLE IF NOT EXISTS sync_state (user_id TEXT PRIMARY KEY, playlists_json TEXT NOT NULL DEFAULT '[]', liked_json TEXT NOT NULL DEFAULT '[]', history_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER);
+   ```
+3. Back on the worker: **Settings** → **Bindings** → **Add binding** →
+   **D1 database** → variable name `DB` → select `tunebox-db` → save
+   (redeploy if it asks).
+
+## 4. Connect Tunebox to it
 
 1. Copy your worker's URL — it looks like
    `https://tunebox-api.<your-name>.workers.dev`
@@ -40,6 +58,10 @@ the worker secret, and delete the old one.
 
 - `GET /api/yt/search?q=...` — YouTube music-video search (slim JSON back)
 - `GET /api/yt/trending` — most-popular music videos, cached 1 hour
+- `POST /api/auth/google` · `GET /api/auth/me` · `POST /api/auth/logout` —
+  Google Sign-In (ID token verified server-side, session in D1, HttpOnly cookie)
+- `GET /api/sync` · `POST /api/sync` — per-user cloud library
+  (playlists, liked songs, listening history; uploaded audio stays on-device)
 - Guards: 30 requests/minute per visitor, plus a daily YouTube quota budget
   (search costs 100 units; the free daily allowance is 10,000)
 - Only answers Tunebox's own site (and localhost for development)

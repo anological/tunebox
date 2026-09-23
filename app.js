@@ -36,16 +36,20 @@ function recordListen(id) {
   listenLog.push(id);
   if (listenLog.length > 300) listenLog = listenLog.slice(-300);
   try { localStorage.setItem(LS_LISTEN, JSON.stringify(listenLog)); } catch (e) { /* private mode */ }
+  scheduleSync();
 }
 function saveLS() {
   localStorage.setItem(LS_PL, JSON.stringify(playlists.filter(p => !p.builtin)));
   localStorage.setItem(LS_LIKED, JSON.stringify([...liked]));
+  try { localStorage.setItem(LS_DELETED, JSON.stringify(deletedPls)); } catch (e) { /* private mode */ }
+  scheduleSync();
 }
 function loadLS() {
   try {
     const pl = JSON.parse(localStorage.getItem(LS_PL) || '[]');
     playlists.push(...pl);
     liked = new Set(JSON.parse(localStorage.getItem(LS_LIKED) || '[]'));
+    deletedPls = JSON.parse(localStorage.getItem(LS_DELETED) || '{}') || {};
   } catch (e) { /* fresh start */ }
 }
 function seedPlaylists() {
@@ -104,6 +108,19 @@ const posterURL = (name, hue) => {
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg).replace(/'/g, '%27');
 };
 const posterImg = (name, hue, cls) => `<img class="${cls}" src="${posterURL(name, hue)}" alt="" loading="lazy">`;
+/* Playlist poster: 2x2 collage of the first tracks' artwork, with the generated
+   poster as fallback behind every cell so no cell is ever blank. */
+const plPosterHTML = (ids, hue, cls, icon) => {
+  const tracks = (ids || []).map(trackById).filter(Boolean).slice(0, 4);
+  if (!tracks.length)
+    return `<div class="${cls}" style="background:linear-gradient(135deg,hsl(${hue},70%,45%),hsl(${(hue + 50) % 360},75%,28%))">${icon || '&#9835;'}</div>`;
+  const cell = t => {
+    const poster = posterURL((t.title || '') + ' ' + (t.artist || ''), t.hue);
+    const bg = t.image ? `url('${t.image}'),url("${poster}")` : `url("${poster}")`;
+    return `<div class="pl-cell" style="background-image:${bg}"></div>`;
+  };
+  return `<div class="${cls} pl-collage n${tracks.length}">${tracks.map(cell).join('')}</div>`;
+};
 const coverHTML = (t, cls) => {
   const poster = posterURL((t.title || '') + ' ' + (t.artist || ''), t.hue);
   const bg = t.image
@@ -112,6 +129,214 @@ const coverHTML = (t, cls) => {
   return `<div class="${cls}" style="${bg}background-size:cover;background-position:center"></div>`;
 };
 const totalDur = ids => ids.reduce((a, id) => a + (trackById(id)?.duration || 0), 0);
+
+/* Global toast: one feedback bubble for the whole app (playlist actions,
+   downloads, sync, errors). Reuses the #sp-toast element + styles. */
+let _toastEl = null, _toastT = null;
+function toast(msg) {
+  if (!_toastEl) {
+    _toastEl = document.getElementById('sp-toast');
+    if (!_toastEl) { _toastEl = document.createElement('div'); _toastEl.id = 'sp-toast'; document.body.appendChild(_toastEl); }
+  }
+  clearTimeout(_toastT);
+  if (!msg) { _toastEl.classList.remove('show'); return; }
+  _toastEl.textContent = msg;
+  _toastEl.classList.add('show');
+  _toastT = setTimeout(() => _toastEl.classList.remove('show'), 2600);
+}
+
+/* Modal dialog: styled replacement for prompt()/confirm(). */
+function openModal(title, bodyHTML, buttons) {
+  const scrim = document.getElementById('modal-scrim');
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHTML;
+  const acts = document.getElementById('modal-actions');
+  acts.innerHTML = '';
+  (buttons || [{ label: 'Close' }]).forEach(b => {
+    const btn = document.createElement('button');
+    btn.textContent = b.label;
+    btn.className = b.primary ? 'sp-btn' : 'ghost-btn';
+    btn.addEventListener('click', () => (b.onClick || closeModal)(closeModal));
+    acts.appendChild(btn);
+  });
+  scrim.hidden = false;
+}
+function closeModal() { document.getElementById('modal-scrim').hidden = true; }
+
+/* Skeleton shimmer shown while remote sections load — no more blank flashes. */
+const skelRow = (n, title) => `
+  <div class="section-title" style="font-size:17px">${title}</div>
+  <div class="skel-row">${('<div class="skel-thumb"><div class="skel skel-cover"></div>' +
+    '<div class="skel skel-line"></div><div class="skel skel-line short"></div></div>').repeat(n)}</div>`;
+/* Skeleton shimmer matching the track-table layout. */
+const skelTracks = n => `<table class="track-table"><tbody>${(
+  '<tr><td colspan="5"><div style="display:flex;gap:12px;align-items:center">' +
+  '<div class="skel" style="width:40px;height:40px;flex-shrink:0"></div>' +
+  '<div style="flex:1"><div class="skel skel-line" style="width:42%"></div>' +
+  '<div class="skel skel-line short" style="width:24%;margin-bottom:0"></div></div>' +
+  '<div class="skel skel-line" style="width:44px;margin-bottom:0"></div></div></td></tr>'
+).repeat(n)}</tbody></table>`;
+
+/* ---------------- Accounts & cloud sync (Tunebox backend) ----------------
+ * Sign in with Google → the backend verifies the ID token, sets a session
+ * cookie, and /api/sync keeps playlists, likes and history on your account.
+ * Uploaded audio files stay on the device they were added on. */
+const GOOGLE_CLIENT_ID = 'PASTE_GOOGLE_OAUTH_CLIENT_ID_HERE';
+const LS_DELETED = 'tunebox.deleted';
+let tbUser = null;       // {id, email, name, picture} when signed in
+let deletedPls = {};     // playlist tombstones {id: timestamp}
+let syncing = false, syncDirty = false, syncTimer = null;
+
+async function tbApi(path, opts = {}) {
+  const res = await fetch(backendUrl() + path, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  if (res.status === 401 && tbUser) { tbUser = null; renderAuthArea(); }
+  return res;
+}
+
+function renderAuthArea() {
+  const el = document.getElementById('auth-area');
+  if (!el) return;
+  if (tbUser) {
+    const label = tbUser.name || tbUser.email || 'Account';
+    const initial = label.trim().charAt(0).toUpperCase();
+    el.innerHTML = tbUser.picture
+      ? `<button id="avatar-btn" title="${esc(label)}"><img src="${esc(tbUser.picture)}" alt=""></button>`
+      : `<button id="avatar-btn" class="avatar" title="${esc(label)}">${esc(initial)}</button>`;
+    document.getElementById('avatar-btn').addEventListener('click', openAccountMenu);
+  } else {
+    el.innerHTML = `<button id="signin-btn">Sign in</button>`;
+    document.getElementById('signin-btn').addEventListener('click', openSignIn);
+  }
+}
+
+function loadGis(cb) {
+  if (window.google && window.google.accounts && window.google.accounts.id) return cb();
+  const s = document.createElement('script');
+  s.src = 'https://accounts.google.com/gsi/client';
+  s.onload = cb;
+  s.onerror = () => toast('Could not load Google Sign-In — check your connection');
+  document.head.appendChild(s);
+}
+
+function openSignIn() {
+  openModal('Sign in to Tunebox',
+    `<p class="m-note">Your playlists, liked songs and listening history follow your account on any device.</p>
+     <div id="gsi-btn"></div>`,
+    [{ label: 'Cancel', onClick: close => close() }]);
+  loadGis(() => {
+    try {
+      window.google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onGoogleCredential });
+      window.google.accounts.id.renderButton(document.getElementById('gsi-btn'),
+        { theme: 'filled_black', size: 'large', width: 320, text: 'signin_with' });
+    } catch (e) { toast('Google Sign-In is not configured yet'); }
+  });
+}
+
+async function onGoogleCredential(resp) {
+  try {
+    const r = await tbApi('/api/auth/google', {
+      method: 'POST', body: JSON.stringify({ credential: resp.credential }),
+    });
+    if (!r.ok) throw new Error(((await r.json()).error || 'Sign-in failed').replace(/^Sign-in failed: /, ''));
+    tbUser = (await r.json()).user;
+    closeModal(); renderAuthArea();
+    toast(`Signed in as ${tbUser.name || tbUser.email}`);
+    syncDirty = true; syncNow();
+  } catch (e) { toast('Sign-in failed: ' + e.message); }
+}
+
+async function signOut() {
+  try { await tbApi('/api/auth/logout', { method: 'POST' }); } catch (e) { /* offline */ }
+  tbUser = null; renderAuthArea(); toast('Signed out');
+}
+
+function openAccountMenu() {
+  if (!tbUser) return;
+  openModal('Account',
+    `<div class="acct-row">${tbUser.picture ? `<img src="${esc(tbUser.picture)}" class="acct-pic" alt="">` : ''}
+       <div><div class="acct-name">${esc(tbUser.name || '')}</div>
+       <div class="acct-email">${esc(tbUser.email || '')}</div></div></div>
+     <p class="m-note">Playlists, likes and history sync to this account. Uploaded audio stays on this device.</p>`,
+    [
+      { label: 'Sync now', onClick: close => { syncDirty = true; syncNow(); close(); toast('Syncing…'); } },
+      { label: 'Sign out', onClick: async close => { close(); await signOut(); } },
+      { label: 'Close', primary: true, onClick: close => close() },
+    ]);
+}
+
+/* Merge server state with local: per-playlist last-write-wins, likes union,
+ * history union (cap 300). Tombstoned playlists stay deleted. */
+function mergeCloudState(server) {
+  const builtin = playlists.filter(p => p.builtin);
+  const byId = {};
+  [...playlists.filter(p => !p.builtin), ...((server && server.playlists) || [])].forEach(p => {
+    if (!p || !p.id) return;
+    const cur = byId[p.id];
+    if (!cur || (p.updatedAt || 0) >= (cur.updatedAt || 0)) byId[p.id] = p;
+  });
+  Object.keys(deletedPls).forEach(id => {
+    const t = byId[id];
+    if (t && (deletedPls[id] || 0) > (t.updatedAt || 0)) delete byId[id];
+  });
+  playlists = [...builtin, ...Object.values(byId)];
+  ((server && server.liked) || []).forEach(id => liked.add(String(id)));
+  const seen = new Set(), merged = [];
+  [...listenLog, ...((server && server.history) || [])].forEach(id => {
+    id = String(id);
+    if (!seen.has(id)) { seen.add(id); merged.push(id); }
+  });
+  listenLog = merged.slice(-300);
+  try {
+    localStorage.setItem(LS_PL, JSON.stringify(playlists.filter(p => !p.builtin)));
+    localStorage.setItem(LS_LIKED, JSON.stringify([...liked]));
+    localStorage.setItem(LS_LISTEN, JSON.stringify(listenLog));
+  } catch (e) { /* private mode */ }
+  renderSidebar();
+  if (typeof currentView !== 'undefined' && currentView && currentView.name) rerender();
+}
+
+function scheduleSync() {
+  if (!tbUser) return;
+  syncDirty = true;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, 2500);
+}
+
+async function syncNow() {
+  if (!tbUser || syncing || !syncDirty) return;
+  syncing = true;
+  try {
+    const r = await tbApi('/api/sync');
+    if (r.ok) mergeCloudState(await r.json());
+    else if (r.status === 401) { syncing = false; return; }
+    const r2 = await tbApi('/api/sync', {
+      method: 'POST',
+      body: JSON.stringify({
+        playlists: playlists.filter(p => !p.builtin),
+        liked: [...liked],
+        history: listenLog.slice(-300),
+      }),
+    });
+    if (r2.ok) syncDirty = false;
+  } catch (e) { /* offline — local data stays the source of truth, retry on next change */ }
+  syncing = false;
+}
+
+async function checkSession() {
+  renderAuthArea();
+  try {
+    const r = await tbApi('/api/auth/me');
+    if (r.ok) {
+      tbUser = (await r.json()).user;
+      renderAuthArea();
+      syncDirty = true; syncNow();
+    }
+  } catch (e) { /* backend unreachable — app works fully offline/local */ }
+}
 
 /* ---------------- Player ---------------- */
 const audio = new Audio();
@@ -244,16 +469,47 @@ function toggleLike(id) {
   } else rerender();
 }
 function createPlaylist() {
-  const name = prompt('Name your playlist:');
-  if (!name || !name.trim()) return;
-  playlists.push({ id: 'p' + Date.now(), name: name.trim(), trackIds: [], desc: 'Your playlist.', hue: Math.floor(Math.random() * 360) });
-  saveLS(); renderSidebar(); go('playlist', playlists[playlists.length - 1].id);
+  openModal('New playlist',
+    `<input id="m-pl-name" class="sp-input" placeholder="Playlist name" maxlength="60" autocomplete="off">`,
+    [
+      { label: 'Cancel', onClick: close => close() },
+      {
+        label: 'Create', primary: true, onClick: close => {
+          const input = document.getElementById('m-pl-name');
+          const name = input.value.trim();
+          if (!name) { input.focus(); return; }
+          playlists.push({ id: 'p' + Date.now(), name, trackIds: [], desc: 'Your playlist.', hue: Math.floor(Math.random() * 360), updatedAt: Date.now() });
+          saveLS(); renderSidebar(); close(); toast('Playlist created');
+          go('playlist', playlists[playlists.length - 1].id);
+        }
+      },
+    ]);
+  const input = document.getElementById('m-pl-name');
+  setTimeout(() => input.focus(), 60);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.querySelector('#modal-actions .sp-btn').click();
+  });
 }
 function addToPlaylist(trackId) {
-  const opts = playlists.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
-  const sel = prompt(`Add to playlist (number):\n${opts}`);
-  const p = playlists[parseInt(sel, 10) - 1];
-  if (p && !p.trackIds.includes(trackId)) { p.trackIds.push(trackId); saveLS(); if (currentView.name !== 'spotify' && currentView.name !== 'free') rerender(); }
+  if (!playlists.length) { createPlaylist(); return; }
+  const t = trackById(trackId) || {};
+  openModal('Add to playlist',
+    `<div class="m-track">${esc(t.title || 'Track')} <span>• ${esc(t.artist || '')}</span></div>
+     <div class="m-list">${playlists.map((p, i) => `
+       <button class="m-pl" data-i="${i}">
+         ${plPosterHTML(p.trackIds, p.hue, 'pl-cover', '&#9835;')}
+         <span class="m-pl-name">${esc(p.name)}</span>
+         <span class="pl-sub">${p.trackIds.length} songs</span>
+       </button>`).join('')}</div>`,
+    [{ label: 'Cancel', onClick: close => close() }]);
+  document.querySelectorAll('.m-pl').forEach(b => b.addEventListener('click', () => {
+    const p = playlists[+b.dataset.i];
+    if (p && !p.trackIds.includes(trackId)) {
+      p.trackIds.push(trackId); p.updatedAt = Date.now(); saveLS(); toast(`Added to ${p.name}`);
+    } else toast('Already in that playlist');
+    closeModal();
+    if (currentView.name !== 'spotify' && currentView.name !== 'free') rerender();
+  }));
 }
 
 /* ---------------- Rendering: sidebar ---------------- */
@@ -262,7 +518,7 @@ function renderSidebar() {
   const likedPl = { id: '__liked', name: 'Liked Songs', count: liked.size, hue: 265, heart: true };
   el.innerHTML = [likedPl, ...playlists].map(p => `
     <button class="pl-item" data-pl="${p.id}">
-      <div class="pl-cover" style="background:linear-gradient(135deg,hsl(${p.hue},70%,45%),hsl(${(p.hue+50)%360},75%,28%))">${p.heart ? '&#9829;' : '&#9835;'}</div>
+      ${plPosterHTML(p.heart ? [...liked] : p.trackIds, p.hue, 'pl-cover', p.heart ? '&#9829;' : '&#9835;')}
       <div><div class="pl-name">${esc(p.name)}</div>
       <div class="pl-sub">${p.heart ? p.count + ' songs' : (p.trackIds.length + ' songs')}</div></div>
     </button>`).join('');
@@ -309,8 +565,10 @@ async function downloadTrack(id) {
     a.href = url; a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 8000);
+    toast('Download started');
   } catch (e) {
     window.open(srcUrl, '_blank'); // fallback: let the browser save or play it
+    toast('Opened in a new tab — save it from there');
   }
 }
 function bindTrackRows(ctxIds) {
@@ -330,7 +588,7 @@ function bindTrackRows(ctxIds) {
 
 function playlistHeader(p, ids) {
   return `<div class="pl-header">
-    <div class="pl-big-cover" style="background:linear-gradient(135deg,hsl(${p.hue},70%,45%),hsl(${(p.hue+50)%360},75%,28%))">${p.heart ? '&#9829;' : '&#9835;'}</div>
+    ${plPosterHTML(ids, p.hue, 'pl-big-cover', p.heart ? '&#9829;' : '&#9835;')}
     <div><div class="pl-type">${p.heart ? 'Playlist' : 'Playlist'}</div>
       <div class="pl-title-big">${esc(p.name)}</div>
       <div class="pl-meta">${esc(p.desc || '')} • ${ids.length} songs, ${fmt(totalDur(ids))}</div></div>
@@ -444,7 +702,7 @@ async function renderHome() {
   const quick = [...playlists].slice(0, 6);
   const cards = playlists.map(p => `
     <button class="card" data-pl="${p.id}">
-      <div class="c-cover" style="background:linear-gradient(135deg,hsl(${p.hue},70%,45%),hsl(${(p.hue+50)%360},75%,28%))"></div>
+      ${plPosterHTML(p.trackIds, p.hue, 'c-cover', '&#9835;')}
       <div class="c-title">${esc(p.name)}</div><div class="c-sub">${esc(p.desc || p.trackIds.length + ' songs')}</div>
       <span class="c-play" data-play-pl="${p.id}">&#9654;</span>
     </button>`).join('');
@@ -456,7 +714,7 @@ async function renderHome() {
   const mixes = Object.values(mixCache).filter(m => m.trackIds.length);
   const mixCards = mixes.map(m => `
     <button class="card" data-mix="${m.id}">
-      <div class="c-cover" style="background:linear-gradient(135deg,hsl(${m.hue},70%,45%),hsl(${(m.hue+50)%360},75%,28%))"><span class="mix-note">&#9835;</span></div>
+      ${plPosterHTML(m.trackIds, m.hue, 'c-cover', '&#9835;')}
       <div class="c-title">${esc(m.name)}</div><div class="c-sub">${m.trackIds.length} songs • Made for you</div>
       <span class="c-play" data-play-mix="${m.id}">&#9654;</span>
     </button>`).join('');
@@ -473,14 +731,17 @@ async function renderHome() {
     <div class="greeting">${greet}</div>
     <div class="quick-grid">${quick.map(p => `
       <button class="quick-card" data-pl="${p.id}">
-        <div class="qc-cover" style="background:linear-gradient(135deg,hsl(${p.hue},70%,45%),hsl(${(p.hue+50)%360},75%,28%))"></div>
+        ${plPosterHTML(p.trackIds, p.hue, 'qc-cover', '&#9835;')}
         <span>${esc(p.name)}</span>
       </button>`).join('')}</div>
     ${recentRow}
     ${mixes.length ? `<div class="section-title">Made for You</div><div class="card-grid">${mixCards}</div>` : ''}
     <div class="section-title">Your Playlists</div>
     <div class="card-grid">${cards}</div>
-    <div id="home-yt"><div class="uni-hint">Loading YouTube trending…</div></div>
+    <div id="home-yt">
+      <div class="section-title">Trending on YouTube</div>
+      <div class="skel-row">${'<div class="skel-thumb"><div class="skel skel-cover"></div><div class="skel skel-line"></div><div class="skel skel-line short"></div></div>'.repeat(5)}</div>
+    </div>
     <div class="section-title">All tracks</div>
     ${trackTable(library.map(t => t.id))}`;
   bindCards(); bindTrackRows(library.map(t => t.id));
@@ -551,7 +812,7 @@ async function renderSearch(q) {
     html += `<div class="uni-sec"><div class="section-title" style="font-size:17px">Your library</div>`;
     if (plHits.length) html += `<div class="card-grid">${plHits.map(p => `
       <button class="card" data-pl="${p.id}">
-        <div class="c-cover" style="background:linear-gradient(135deg,hsl(${p.hue},70%,45%),hsl(${(p.hue+50)%360},75%,28%))"></div>
+        ${plPosterHTML(p.trackIds, p.hue, 'c-cover', '&#9835;')}
         <div class="c-title">${esc(p.name)}</div><div class="c-sub">${p.trackIds.length} songs</div>
       </button>`).join('')}</div>`;
     if (hits.length) html += trackTable(hits);
@@ -574,7 +835,7 @@ async function renderSearch(q) {
       const g = $('#uni-sp-go'); if (g) g.addEventListener('click', () => go('spotify'));
       finish(); return;
     }
-    spBox.innerHTML = `<div class="uni-hint">Searching Spotify…</div>`;
+    spBox.innerHTML = skelRow(4, 'Spotify');
     try {
       const data = await spApi('/v1/search?' + new URLSearchParams({ q: query, type: 'track', limit: '8' }));
       if (!alive()) return;
@@ -596,7 +857,7 @@ async function renderSearch(q) {
       if (g) g.addEventListener('click', () => { freeSource = 'youtube'; go('free'); });
       finish(); return;
     }
-    ytBox.innerHTML = `<div class="uni-hint">Searching YouTube…</div>`;
+    ytBox.innerHTML = skelRow(4, 'YouTube');
     await new Promise(r => setTimeout(r, 500));
     if (!alive()) return;
     try {
@@ -620,7 +881,7 @@ async function renderSearch(q) {
   })();
   // Audius (free music, no account)
   (async () => {
-    auBox.innerHTML = `<div class="uni-hint">Searching Audius…</div>`;
+    auBox.innerHTML = skelRow(4, 'Audius — free music');
     try {
       const items = await auApi('/tracks/search?query=' + encodeURIComponent(query) + '&limit=15');
       if (!alive()) return;
@@ -634,7 +895,7 @@ async function renderSearch(q) {
   })();
   // Internet Archive (collections)
   (async () => {
-    iaBox.innerHTML = `<div class="uni-hint">Searching the Internet Archive…</div>`;
+    iaBox.innerHTML = skelRow(4, 'Internet Archive');
     try {
       const docs = await iaSearch(query);
       if (!alive()) return;
@@ -664,7 +925,18 @@ function renderPlaylist(id) {
   $('#pl-play').addEventListener('click', () => { if (p.trackIds.length) { setQueue(p.trackIds, 0); playCurrent(); } });
   const del = $('#pl-delete');
   if (del) del.addEventListener('click', () => {
-    if (confirm(`Delete "${p.name}"?`)) { playlists = playlists.filter(x => x.id !== id); saveLS(); renderSidebar(); go('home'); }
+    openModal('Delete playlist',
+      `<p class="m-note">"${esc(p.name)}" will be removed from your library.</p>`,
+      [
+        { label: 'Cancel', onClick: close => close() },
+        {
+          label: 'Delete', primary: true, onClick: close => {
+            deletedPls[id] = Date.now();
+            playlists = playlists.filter(x => x.id !== id);
+            saveLS(); renderSidebar(); close(); toast('Playlist deleted'); go('home');
+          }
+        },
+      ]);
   });
   bindTrackRows(p.trackIds);
 }
@@ -737,6 +1009,7 @@ async function handleFiles(files) {
   if (!up) { up = { id: 'pl-uploads', name: 'Your Uploads', desc: 'Music you added.', trackIds: [], hue: 150 }; playlists.push(up); }
   library.slice(-added).forEach(t => { if (!up.trackIds.includes(t.id)) up.trackIds.push(t.id); });
   saveLS(); renderSidebar(); rerender();
+  if (added) toast(added === 1 ? 'Added to your library' : `${added} tracks added to your library`);
 }
 
 /* ---------------- Wire up ---------------- */
@@ -793,6 +1066,10 @@ async function init() {
   });
   $('#menu-btn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
   $('#scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
+  $('#modal-scrim').addEventListener('click', e => { if (e.target.id === 'modal-scrim') closeModal(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !$('#modal-scrim').hidden) closeModal();
+  });
   document.addEventListener('keydown', e => {
     if (e.code === 'Space' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); togglePlay(); }
   });
@@ -817,6 +1094,8 @@ async function init() {
   }).catch(() => {});
 
   const authed = await handleSpotifyReturn().catch(() => false);
+  renderAuthArea();
+  checkSession().catch(() => {});
   go(authed ? 'spotify' : 'home');
 }
 document.addEventListener('DOMContentLoaded', init);
@@ -1035,12 +1314,7 @@ function updateSpotifyProgress() {
   $('#t-dur').textContent = fmt(spDuration / 1000);
   if (!seeking && spDuration) $('#seek').value = Math.round(spPosition / spDuration * 1000);
 }
-function spNotice(msg) {
-  let el = $('#sp-toast');
-  if (!el) { el = document.createElement('div'); el.id = 'sp-toast'; document.body.appendChild(el); }
-  el.textContent = msg; el.classList.add('show');
-  clearTimeout(spNotice._t); spNotice._t = setTimeout(() => el.classList.remove('show'), 4500);
-}
+function spNotice(msg) { toast(msg); }
 
 /* ----- normalize Spotify objects into Tunebox tracks ----- */
 function hashHue(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
@@ -1120,7 +1394,7 @@ async function renderSpotify() {
       <button class="sp-tab ${st.tab === 'all' ? 'on' : ''}" data-sptab="all">All Songs</button>
       <button class="sp-tab ${st.tab === 'search' ? 'on' : ''}" data-sptab="search">Search</button>
     </div>
-    <div id="sp-content"><div class="empty">Loading…</div></div>`;
+    <div id="sp-content">${skelTracks(8)}</div>`;
   document.querySelectorAll('[data-sptab]').forEach(b => b.addEventListener('click', () => {
     spViewState = { tab: b.dataset.sptab, playlistId: null, query: spViewState.query, likedOffset: 0, likedIds: [], allIds: [] };
     renderSpotify();
@@ -1416,7 +1690,7 @@ async function renderFreeAudius() {
 async function loadAuTracks() {
   const box = $('#au-content');
   if (!box) return;
-  box.innerHTML = `<div class="empty">Loading…</div>`;
+  box.innerHTML = skelTracks(8);
   try {
     const q = auQuery.trim();
     const items = q
@@ -1521,14 +1795,14 @@ async function renderFreeArchive() {
   if (iaItemId) { await renderIaDetail(); return; }
   $('#free-body').innerHTML = `
     <div class="uni-hint">Tip: the search bar at the top searches the Archive along with Spotify, YouTube and Audius. Hit the &#8681; button on any track to save it as an audio file, free.</div>
-    <div id="ia-content"><div class="empty">Loading…</div></div>`;
+    <div id="ia-content"></div>`;
   await loadIaResults();
 }
 
 async function loadIaResults() {
   const box = $('#ia-content');
   if (!box) return;
-  box.innerHTML = `<div class="empty">Loading…</div>`;
+  box.innerHTML = skelRow(6, iaQuery.trim() ? `Results for "${esc(iaQuery.trim())}"` : 'Popular live recordings');
   try {
     const docs = await iaSearch(iaQuery);
     if (!docs.length) { box.innerHTML = `<div class="empty">No results — try another search.</div>`; return; }
@@ -1550,7 +1824,7 @@ async function loadIaResults() {
 async function renderIaDetail() {
   const body = $('#free-body');
   const back = `<div style="margin-top:12px"><button class="ghost-btn" id="ia-back">← Back to results</button></div>`;
-  body.innerHTML = `<div class="empty">Loading tracks…</div>`;
+  body.innerHTML = skelTracks(8);
   try {
     const { title, creator, ids } = await iaLoadItem(iaItemId);
     body.innerHTML = `
@@ -1584,6 +1858,12 @@ function backendUrl() {
   try { return ((localStorage.getItem(BE_LS) || BE_DEFAULT).trim().replace(/\/+$/, '')); }
   catch (e) { return BE_DEFAULT; }
 }
+/* The raw custom URL the user saved ('' when using the built-in default).
+   The default address is never shown in the UI — it lives here, not on screen. */
+function backendCustom() {
+  try { return (localStorage.getItem(BE_LS) || '').trim().replace(/\/+$/, ''); }
+  catch (e) { return ''; }
+}
 function backendSave(u) {
   try { localStorage.setItem(BE_LS, String(u || '').trim().replace(/\/+$/, '')); } catch (e) { /* storage unavailable */ }
 }
@@ -1597,15 +1877,19 @@ function ytExtractId(input) {
 }
 
 function renderFreeYouTube() {
-  const be = backendUrl();
+  const customBe = backendCustom();
   $('#free-body').innerHTML = `
-    <p class="sp-note">Plays through YouTube's official player — artists keep their revenue. ${be ? 'Backend connected — search and trending are on.' : 'Pasting a link works right away; connect the backend below to unlock search and the home-page trending row.'}</p>
-    <div class="yt-keyrow">
-      <input id="be-url" class="sp-input" placeholder="Backend URL, e.g. https://tunebox-api.you.workers.dev" value="${esc(be)}" autocomplete="off">
-      <button id="be-save" class="ghost-btn">Save</button>
-      ${be ? '<button id="be-clear" class="ghost-btn">Clear</button>' : ''}
-    </div>
-    <p class="yt-hint">The backend is pre-configured and keeps the YouTube API key on a server instead of inside this page. You can replace the URL above if you ever deploy your own.</p>
+    <p class="sp-note">Plays through YouTube's official player — artists keep their revenue.</p>
+    <div class="yt-status"><span class="dot"></span>Connected — search and trending are on</div>
+    <details class="adv">
+      <summary>Advanced</summary>
+      <div class="yt-keyrow">
+        <input id="be-url" class="sp-input" placeholder="Custom backend URL (optional)" value="${esc(customBe)}" autocomplete="off">
+        <button id="be-save" class="ghost-btn">Save</button>
+        ${customBe ? '<button id="be-clear" class="ghost-btn">Reset</button>' : ''}
+      </div>
+      <p class="yt-hint">Only needed if you deploy your own backend. The API key always stays on the server, never in this page.</p>
+    </details>
     <div class="uni-hint" style="margin:14px 0 4px">Tip: use the search bar at the top — it searches YouTube, Spotify, Audius and the Archive all at once.</div>
     <div class="yt-keyrow" style="margin-bottom:16px;max-width:520px">
       <input id="yt-link" class="sp-input" placeholder="Or paste a YouTube link / video ID…" autocomplete="off">

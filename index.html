@@ -52,7 +52,7 @@
       <div class="spacer"></div>
       <button id="upload-btn">Add music</button>
       <input type="file" id="file-input" accept="audio/*" multiple hidden>
-      <div class="avatar">Y</div>
+      <div id="auth-area"></div>
     </header>
     <div id="view"></div>
   </main>
@@ -98,6 +98,14 @@
   <div id="queue-panel" hidden>
     <div class="q-head"><span>Up next</span><button id="queue-close">&times;</button></div>
     <div id="queue-list"></div>
+  </div>
+
+  <div id="modal-scrim" hidden>
+    <div id="modal" role="dialog" aria-modal="true">
+      <div id="modal-title"></div>
+      <div id="modal-body"></div>
+      <div id="modal-actions"></div>
+    </div>
   </div>
 </div>
 <script src="app.js"></script>
