@@ -443,7 +443,7 @@ function togglePlay() {
     if (!ids.length) return;
     setQueue(ids, 0); playCurrent(); return;
   }
-  if (ytMode && ytPlayer) { if (ytPlaying && !ytStalled) ytPlayer.pauseVideo(); else { ytStalled = false; ytPlayer.playVideo(); armYtStallWatchdog(4000); } }
+  if (ytMode && ytPlayer) { if (ytPlaying && !ytStalled) ytPlayer.pauseVideo(); else { ytStalled = false; $('#play')?.classList.remove('stalled'); ytPlayer.playVideo(); armYtStallWatchdog(4000); } }
   else if (currentIsSpotify() && spPlayer) (spPlaying ? spPlayer.pause() : spPlayer.resume()).catch(() => {});
   else {
     audio.paused ? audio.play().catch(() => {}) : audio.pause();
@@ -1525,6 +1525,7 @@ function replayCurrentYt() {
 function stopYt() {
   ytMode = false; ytPlaying = false; ytStalled = false;
   clearTimeout(ytStallTimer); ytStallTimer = null;
+  $('#play')?.classList.remove('stalled');
   try { if (ytPlayer && ytPlayer.pauseVideo) ytPlayer.pauseVideo(); } catch (e) {}
 }
 
@@ -1532,7 +1533,7 @@ function updateYtProgress() {
   if (!ytMode || !ytPlayer) return;
   try {
     const pos = ytPlayer.getCurrentTime() || 0, dur = ytPlayer.getDuration() || 0;
-    if (pos > 0.5) { if (ytStallTimer) { clearTimeout(ytStallTimer); ytStallTimer = null; } ytStalled = false; }
+    if (pos > 0.5) { if (ytStallTimer) { clearTimeout(ytStallTimer); ytStallTimer = null; } ytStalled = false; $('#play')?.classList.remove('stalled'); }
     $('#t-cur').textContent = fmt(pos);
     if (dur) $('#t-dur').textContent = fmt(dur);
     if (!seeking && dur) $('#seek').value = Math.round(pos / dur * 1000);
@@ -1547,7 +1548,11 @@ function armYtStallWatchdog(ms) {
     if (!ytMode) return;
     let pos = 0;
     try { pos = (ytPlayer && ytPlayer.getCurrentTime()) || 0; } catch (e) {}
-    if (pos < 0.5) { ytStalled = true; spNotice('Tap Play to start the audio.'); }
+    if (pos < 0.5) {
+      ytStalled = true;
+      $('#play')?.classList.add('stalled');
+      spNotice('Tap Play to start the audio.');
+    }
   }, ms || 6000);
 }
 

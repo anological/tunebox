@@ -236,6 +236,8 @@ nav { display: flex; flex-direction: column; gap: 4px; margin-bottom: 18px; }
   display: flex; align-items: center; justify-content: center;
 }
 #play:hover { transform: scale(1.06); color: #000 !important; }
+@keyframes playPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(168,85,247,.55); } 50% { box-shadow: 0 0 0 10px rgba(168,85,247,0); } }
+#play.stalled { animation: playPulse 1.4s ease-in-out infinite; }
 .pb-progress { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 520px; font-size: 11px; color: var(--muted); }
 input[type=range] { -webkit-appearance: none; appearance: none; background: transparent; height: 14px; }
 input[type=range]::-webkit-slider-runnable-track { height: 4px; background: #3a3a44; border-radius: 2px; }
