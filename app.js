@@ -587,30 +587,31 @@ async function renderSearch(q) {
     } catch (e) { if (alive()) spBox.innerHTML = ''; }
     finish();
   })();
-  // YouTube (extra debounce — each search costs API quota)
+  // YouTube via the Tunebox backend — the API key stays on the server
   (async () => {
-    const key = ytKey();
-    if (!key) { ytBox.innerHTML = ''; finish(); return; }
+    const be = backendUrl();
+    if (!be) {
+      ytBox.innerHTML = `<div class="uni-hint">YouTube search needs the backend — <a id="uni-be-go">connect it in Free Music → YouTube</a>.</div>`;
+      const g = $('#uni-be-go');
+      if (g) g.addEventListener('click', () => { freeSource = 'youtube'; go('free'); });
+      finish(); return;
+    }
     ytBox.innerHTML = `<div class="uni-hint">Searching YouTube…</div>`;
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, 500));
     if (!alive()) return;
     try {
-      const sp = new URLSearchParams({ part: 'snippet', type: 'video', videoCategoryId: '10', maxResults: '8', q: query, key });
-      const res = await fetch('https://www.googleapis.com/youtube/v3/search?' + sp.toString());
-      if (!res.ok) throw new Error('YouTube error ' + res.status);
-      const json = await res.json();
-      const items = (json.items || []).filter(i => i.id && i.id.videoId);
+      const res = await fetch(be + '/api/yt/search?' + new URLSearchParams({ q: query }));
+      if (!res.ok) throw new Error('Backend error ' + res.status);
+      const items = await res.json();
       if (!alive()) return;
       if (items.length) {
         ytBox.innerHTML = `<div class="section-title" style="font-size:17px">YouTube</div><div class="uni-sec">
           <div id="uni-yt-player"></div><div class="yt-list">` +
-          items.map(i => {
-            const vid = i.id.videoId, sn = i.snippet || {};
-            const th = sn.thumbnails && (sn.thumbnails.medium || sn.thumbnails.default);
-            return `<div class="yt-item" data-vid="${vid}" data-title="${esc(sn.title || 'YouTube video')}" data-channel="${esc(sn.channelTitle || '')}">` +
-              (th ? `<img class="yt-thumb" src="${esc(th.url)}" alt="" loading="lazy">` : posterImg(sn.title, hueFor(vid), 'yt-thumb')) +
-              `<div class="yt-meta"><div class="t-title">${esc(sn.title || 'YouTube video')}</div><div class="t-artist">${esc(sn.channelTitle || '')}</div></div></div>`;
-          }).join('') + `</div></div>`;
+          items.map(v => `
+            <div class="yt-item" data-vid="${esc(v.id)}" data-title="${esc(v.title || 'YouTube video')}" data-channel="${esc(v.channel || '')}">
+              ${v.thumb ? `<img class="yt-thumb" src="${esc(v.thumb)}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), 'yt-thumb')}
+              <div class="yt-meta"><div class="t-title">${esc(v.title || 'YouTube video')}</div><div class="t-artist">${esc(v.channel || '')}</div></div>
+            </div>`).join('') + `</div></div>`;
         ytBox.querySelectorAll('.yt-item').forEach(el => el.addEventListener('click', () =>
           ytShowPlayer(el.dataset.vid, el.dataset.title, el.dataset.channel, 'uni-yt-player')));
       } else ytBox.innerHTML = '';
@@ -1573,21 +1574,16 @@ async function renderIaDetail() {
 }
 
 /* ---------------- Free music source 3: YouTube via official embeds (no ripping) ---------------- */
-const YT_KEY_LS = 'tunebox.ytkey';
-// Pre-installed free YouTube Data API v3 key so search works out of the box.
-// Restricted to YouTube Data API v3 only — replace it with your own key anytime.
-const YT_DEFAULT_KEY = 'AIzaSyCOwqWKzX_XmN_uLzLs7ZDA3-wMLyoTRaM';
-let ytQuery = '';
-
-function ytKey() {
-  try {
-    const v = localStorage.getItem(YT_KEY_LS);
-    if (v === null) return YT_DEFAULT_KEY; // never set: use the pre-installed key
-    return v.trim(); // explicitly saved (empty string = cleared by user)
-  } catch (e) { return YT_DEFAULT_KEY; }
+/* YouTube search & trending now run through the Tunebox backend (backend/worker.js),
+   so the YouTube API key lives on the server and never appears in this file.
+   Deploy the free backend once, then paste its URL in the Free Music → YouTube tab. */
+const BE_LS = 'tunebox.backend';
+function backendUrl() {
+  try { return (localStorage.getItem(BE_LS) || '').trim().replace(/\/+$/, ''); }
+  catch (e) { return ''; }
 }
-function ytSaveKey(k) {
-  try { localStorage.setItem(YT_KEY_LS, k.trim()); } catch (e) { /* storage unavailable */ }
+function backendSave(u) {
+  try { localStorage.setItem(BE_LS, String(u || '').trim().replace(/\/+$/, '')); } catch (e) { /* storage unavailable */ }
 }
 function ytExtractId(input) {
   const s = String(input || '').trim();
@@ -1597,33 +1593,28 @@ function ytExtractId(input) {
   if (/^[\w-]{11}$/.test(s)) return s;
   return null;
 }
-function ytIsoSecs(iso) {
-  const m = String(iso || '').match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!m) return 0;
-  return (parseInt(m[1] || '0', 10) * 3600) + (parseInt(m[2] || '0', 10) * 60) + parseInt(m[3] || '0', 10);
-}
 
 function renderFreeYouTube() {
-  const key = ytKey();
+  const be = backendUrl();
   $('#free-body').innerHTML = `
-    <p class="sp-note">Plays through YouTube's official player — artists keep their revenue. Search works out of the box; pasting a link works with no key at all.</p>
+    <p class="sp-note">Plays through YouTube's official player — artists keep their revenue. ${be ? 'Backend connected — search and trending are on.' : 'Pasting a link works right away; connect the backend below to unlock search and the home-page trending row.'}</p>
     <div class="yt-keyrow">
-      <input id="yt-key" class="sp-input" type="password" placeholder="Paste your YouTube API key here (for search)" value="${esc(key)}" autocomplete="off">
-      <button id="yt-key-save" class="ghost-btn">Save</button>
-      ${key ? '<button id="yt-key-clear" class="ghost-btn">Clear</button>' : ''}
+      <input id="be-url" class="sp-input" placeholder="Backend URL, e.g. https://tunebox-api.you.workers.dev" value="${esc(be)}" autocomplete="off">
+      <button id="be-save" class="ghost-btn">Save</button>
+      ${be ? '<button id="be-clear" class="ghost-btn">Clear</button>' : ''}
     </div>
-    <p class="yt-hint">A free YouTube API key comes pre-installed, so search works right away. You can replace it with your own key anytime — your own key stays in this browser only.</p>
+    <p class="yt-hint">The free backend (the <b>backend</b> folder in the project) keeps the YouTube API key on a server instead of inside this page. Deploy it once on Cloudflare's free tier, paste its URL here.</p>
     <div class="uni-hint" style="margin:14px 0 4px">Tip: use the search bar at the top — it searches YouTube, Spotify, Audius and the Archive all at once.</div>
     <div class="yt-keyrow" style="margin-bottom:16px;max-width:520px">
       <input id="yt-link" class="sp-input" placeholder="Or paste a YouTube link / video ID…" autocomplete="off">
       <button id="yt-link-play" class="ghost-btn">Play</button>
     </div>
     <div id="yt-player"></div>
-    <div id="yt-content">${key ? '<div class="empty">Search for music videos above.</div>' : '<div class="empty">Add your API key to search, or paste a YouTube link to play it right away.</div>'}</div>`;
+    <div id="yt-content"><div class="empty">Paste a YouTube link above to play it right away.</div></div>`;
 
-  $('#yt-key-save').addEventListener('click', () => { ytSaveKey($('#yt-key').value); renderFree(); });
-  const kc = $('#yt-key-clear');
-  if (kc) kc.addEventListener('click', () => { ytSaveKey(''); renderFree(); });
+  $('#be-save').addEventListener('click', () => { backendSave($('#be-url').value); renderFree(); });
+  const bc = $('#be-clear');
+  if (bc) bc.addEventListener('click', () => { backendSave(''); renderFree(); });
 
   const playLink = () => {
     const id = ytExtractId($('#yt-link').value);
@@ -1657,23 +1648,15 @@ function ytShowPlayer(id, title, channel, target) {
   document.querySelectorAll('.yt-item').forEach(el => el.classList.toggle('playing', el.dataset.vid === id));
 }
 
-/* Trending music videos on YouTube for the home page (cached per session, 1 API unit) */
+/* Trending music videos via the Tunebox backend (cached server-side 1h, ~1 API unit) */
 let ytTrendCache = null, ytPendingPlay = null;
 async function ytTrending() {
   if (ytTrendCache) return ytTrendCache;
-  const key = ytKey();
-  if (!key) return [];
-  const sp = new URLSearchParams({ part: 'snippet,contentDetails', chart: 'mostPopular', videoCategoryId: '10', regionCode: 'IN', maxResults: '12', key });
-  const res = await fetch('https://www.googleapis.com/youtube/v3/videos?' + sp.toString());
-  if (!res.ok) throw new Error('YouTube error ' + res.status);
-  const json = await res.json();
-  ytTrendCache = (json.items || []).map(v => ({
-    id: v.id,
-    title: v.snippet?.title || 'YouTube video',
-    channel: v.snippet?.channelTitle || '',
-    thumb: v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || '',
-    dur: ytIsoSecs(v.contentDetails?.duration)
-  }));
+  const be = backendUrl();
+  if (!be) return [];
+  const res = await fetch(be + '/api/yt/trending');
+  if (!res.ok) throw new Error('Backend error ' + res.status);
+  ytTrendCache = await res.json();
   return ytTrendCache;
 }
 
