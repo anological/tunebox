@@ -1,0 +1,74 @@
+[
+  {
+    "file": "track1.wav",
+    "title": "Midnight Drive",
+    "artist": "Neon Coast",
+    "album": "Afterglow",
+    "duration": 19.2,
+    "hue": 265,
+    "tags": [
+      "electronic",
+      "chill"
+    ]
+  },
+  {
+    "file": "track2.wav",
+    "title": "Solar Bloom",
+    "artist": "Aurora Fields",
+    "album": "Daybreak",
+    "duration": 16.0,
+    "hue": 45,
+    "tags": [
+      "pop",
+      "chill"
+    ]
+  },
+  {
+    "file": "track3.wav",
+    "title": "Static Dreams",
+    "artist": "Velvet Circuit",
+    "album": "Neon Static",
+    "duration": 15.0,
+    "hue": 200,
+    "tags": [
+      "electronic",
+      "workout"
+    ]
+  },
+  {
+    "file": "track4.wav",
+    "title": "Tidal",
+    "artist": "Blue Meridian",
+    "album": "Drift",
+    "duration": 20.9,
+    "hue": 190,
+    "tags": [
+      "ambient",
+      "chill"
+    ]
+  },
+  {
+    "file": "track5.wav",
+    "title": "Paper Satellites",
+    "artist": "The Orbiters",
+    "album": "Low Orbit",
+    "duration": 17.5,
+    "hue": 280,
+    "tags": [
+      "rock",
+      "indie"
+    ]
+  },
+  {
+    "file": "track6.wav",
+    "title": "Amber Skies",
+    "artist": "Field Notes",
+    "album": "Harvest",
+    "duration": 18.3,
+    "hue": 25,
+    "tags": [
+      "indie",
+      "chill"
+    ]
+  }
+]

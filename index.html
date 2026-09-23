@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tunebox</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" width="28" height="28"><circle cx="12" cy="12" r="10" fill="none" stroke="#8b5cf6" stroke-width="2.5"/><path d="M8 12.5c1.2-3.5 2.8-3.5 4 0s2.8 3.5 4 0" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round"/></svg>
+      <span>Tunebox</span>
+    </div>
+    <nav>
+      <button class="nav-item active" data-view="home">
+        <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        Home
+      </button>
+      <button class="nav-item" data-view="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.8-3.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        Search
+      </button>
+      <button class="nav-item" data-view="spotify">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 10.3c2.6-1 5.7-1 8.3.6M8.4 13.4c2.1-.8 4.4-.8 6.8.4M8.9 16.3c1.6-.6 3.2-.6 5 .3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        Spotify
+      </button>
+      <button class="nav-item" data-view="free">
+        <svg viewBox="0 0 24 24"><path d="M9 18V6l10-2.5V15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16.5" cy="15" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        Free Music
+      </button>
+    </nav>
+    <div class="library">
+      <div class="library-head">
+        <span>Your Library</span>
+        <button id="create-playlist" title="Create playlist">+</button>
+      </div>
+      <div id="playlist-list"></div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="topbar">
+      <div class="nav-arrows">
+        <button id="back" title="Go back">&#8249;</button>
+        <button id="fwd" title="Go forward">&#8250;</button>
+      </div>
+      <input id="search-input" placeholder="What do you want to listen to?" autocomplete="off" hidden>
+      <div class="spacer"></div>
+      <button id="upload-btn">Add music</button>
+      <input type="file" id="file-input" accept="audio/*" multiple hidden>
+      <div class="avatar">Y</div>
+    </header>
+    <div id="view"></div>
+  </main>
+
+  <aside id="nowplaying" hidden>
+    <div class="np-head"><span>Now playing</span><button id="np-close" title="Close">&times;</button></div>
+    <div class="np-cover" id="np-cover"></div>
+    <div class="np-title" id="np-title">—</div>
+    <div class="np-artist" id="np-artist">—</div>
+    <div class="np-album" id="np-album"></div>
+  </aside>
+
+  <footer id="playerbar">
+    <div class="pb-left">
+      <div class="pb-cover" id="pb-cover"></div>
+      <div class="pb-meta">
+        <div id="pb-title">Pick something to play</div>
+        <div id="pb-artist">Your library is ready</div>
+      </div>
+      <button id="pb-like" title="Like">&#9825;</button>
+    </div>
+    <div class="pb-center">
+      <div class="pb-controls">
+        <button id="shuffle" title="Shuffle">&#8646;</button>
+        <button id="prev" title="Previous">&#9198;</button>
+        <button id="play" title="Play">&#9654;</button>
+        <button id="next" title="Next">&#9197;</button>
+        <button id="repeat" title="Repeat">&#8635;</button>
+      </div>
+      <div class="pb-progress">
+        <span id="t-cur">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" aria-label="Seek">
+        <span id="t-dur">0:00</span>
+      </div>
+    </div>
+    <div class="pb-right">
+      <button id="queue-toggle" title="Queue">&#9776;</button>
+      <button id="mute" title="Mute">&#128266;</button>
+      <input type="range" id="volume" min="0" max="100" value="80" aria-label="Volume">
+    </div>
+  </footer>
+
+  <div id="queue-panel" hidden>
+    <div class="q-head"><span>Up next</span><button id="queue-close">&times;</button></div>
+    <div id="queue-list"></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
