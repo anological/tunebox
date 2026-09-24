@@ -3,12 +3,12 @@
 
 /* ---------------- Data ---------------- */
 const BUILTIN = [
-  { id: 't1', title: 'Midnight Drive',   artist: 'Neon Coast',    album: 'Afterglow',   src: 'assets/audio/track1.wav', duration: 19.2, hue: 265, tags: ['electronic', 'chill'] },
-  { id: 't2', title: 'Solar Bloom',      artist: 'Aurora Fields', album: 'Daybreak',    src: 'assets/audio/track2.wav', duration: 16.0, hue: 45,  tags: ['pop', 'chill'] },
-  { id: 't3', title: 'Static Dreams',    artist: 'Velvet Circuit',album: 'Neon Static', src: 'assets/audio/track3.wav', duration: 15.0, hue: 200, tags: ['electronic', 'workout'] },
-  { id: 't4', title: 'Tidal',             artist: 'Blue Meridian', album: 'Drift',       src: 'assets/audio/track4.wav', duration: 20.9, hue: 190, tags: ['ambient', 'chill'] },
-  { id: 't5', title: 'Paper Satellites', artist: 'The Orbiters',  album: 'Low Orbit',   src: 'assets/audio/track5.wav', duration: 17.5, hue: 280, tags: ['rock', 'indie'] },
-  { id: 't6', title: 'Amber Skies',       artist: 'Field Notes',   album: 'Harvest',     src: 'assets/audio/track6.wav', duration: 18.3, hue: 25,  tags: ['indie', 'chill'] },
+  { id: 't1', title: 'Midnight Drive',   artist: 'Neon Coast',    album: 'Afterglow',   src: 'assets/audio/track1.wav', image: 'assets/covers/t1.jpg', duration: 19.2, hue: 265, tags: ['electronic', 'chill'] },
+  { id: 't2', title: 'Solar Bloom',      artist: 'Aurora Fields', album: 'Daybreak',    src: 'assets/audio/track2.wav', image: 'assets/covers/t2.jpg', duration: 16.0, hue: 45,  tags: ['pop', 'chill'] },
+  { id: 't3', title: 'Static Dreams',    artist: 'Velvet Circuit',album: 'Neon Static', src: 'assets/audio/track3.wav', image: 'assets/covers/t3.jpg', duration: 15.0, hue: 200, tags: ['electronic', 'workout'] },
+  { id: 't4', title: 'Tidal',             artist: 'Blue Meridian', album: 'Drift',       src: 'assets/audio/track4.wav', image: 'assets/covers/t4.jpg', duration: 20.9, hue: 190, tags: ['ambient', 'chill'] },
+  { id: 't5', title: 'Paper Satellites', artist: 'The Orbiters',  album: 'Low Orbit',   src: 'assets/audio/track5.wav', image: 'assets/covers/t5.jpg', duration: 17.5, hue: 280, tags: ['rock', 'indie'] },
+  { id: 't6', title: 'Amber Skies',       artist: 'Field Notes',   album: 'Harvest',     src: 'assets/audio/track6.wav', image: 'assets/covers/t6.jpg', duration: 18.3, hue: 25,  tags: ['indie', 'chill'] },
 ];
 const CATEGORIES = [
   { name: 'Pop', hue: 330, q: 'pop' }, { name: 'Electronic', hue: 210, q: 'electronic' },
@@ -95,7 +95,7 @@ const albumTrackCache = {};
 const FEATURED_ALBUMS = [
   {
     id: 'designerr', title: 'DESIGNERR', artist: 'Jokhay & Umair', year: '2026', label: 'Mass Appeal',
-    cover: 'https://i.ytimg.com/vi/xOEFYt_3LaU/hqdefault.jpg',
+    cover: 'assets/covers/designerr.jpg',
     blurb: 'The 2026 producer album from Jokhay & Umair — 12 tracks with Talha Anjum, Talhah Yunus, JJ47, Asim Azhar, Faris Shafi, Maanu, Afusic, Ghostface Killah, Benny The Butcher and more.',
     tracks: [
       { title: 'DESIGNERR', artist: 'Jokhay, Umair, CGF', ytId: 'xOEFYt_3LaU', dur: 119 },
@@ -148,6 +148,15 @@ const posterURL = (name, hue) => {
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg).replace(/'/g, '%27');
 };
 const posterImg = (name, hue, cls) => `<img class="${cls}" src="${posterURL(name, hue)}" alt="" loading="lazy">`;
+/* Universal cover fallback: any <img> carrying data-poster swaps to the generated
+   poster if its real source fails to load — a poster is never blank or broken. */
+document.addEventListener('error', e => {
+  const el = e.target;
+  if (el && el.tagName === 'IMG' && el.dataset && el.dataset.poster && !el.dataset.fbk) {
+    el.dataset.fbk = '1';
+    el.src = el.dataset.poster;
+  }
+}, true);
 /* Playlist poster: 2x2 collage of the first tracks' artwork, with the generated
    poster as fallback behind every cell so no cell is ever blank. */
 const plPosterHTML = (ids, hue, cls, icon) => {
@@ -760,7 +769,7 @@ function renderAlbum(id) {
   const ids = tracks.map(t => t.id);
   $('#view').innerHTML = `
     <div class="pl-header">
-      <img class="pl-big-cover" src="${esc(a.cover)}" alt="">
+      <img class="pl-big-cover" src="${esc(a.cover)}" data-poster="${posterURL(a.title, 222)}" alt="">
       <div><div class="pl-type">Album • ${esc(a.label || '')}</div>
         <div class="pl-title-big">${esc(a.title)}</div>
         <div class="pl-meta">${esc(a.artist)} • ${a.year || ''} • ${tracks.length} songs, ${fmt(tracks.reduce((s, t) => s + (t.duration || 0), 0))}</div>
@@ -817,7 +826,7 @@ async function renderHome() {
     ${mixes.length ? `<div class="section-title">Made for You</div><div class="card-grid">${mixCards}</div>` : ''}
     ${FEATURED_ALBUMS.length ? `<div class="section-title">Featured albums</div><div class="card-grid">${FEATURED_ALBUMS.map(a => `
       <button class="card" data-album="${a.id}">
-        <img class="c-cover" src="${esc(a.cover)}" alt="" loading="lazy">
+        <img class="c-cover" src="${esc(a.cover)}" data-poster="${posterURL(a.title, 222)}" alt="" loading="lazy">
         <div class="c-title">${esc(a.title)}</div><div class="c-sub">${esc(a.artist)} • ${a.tracks.length} songs</div>
         <span class="c-play" data-play-album="${a.id}">&#9654;</span>
       </button>`).join('')}</div>` : ''}
@@ -861,7 +870,7 @@ async function renderHome() {
     box.innerHTML = `<div class="section-title">Trending on YouTube</div><div class="trend-row">` +
       trends.map(v => `
         <button class="trend-card" data-vid="${v.id}" data-title="${esc(v.title)}" data-channel="${esc(v.channel)}">
-          ${v.thumb ? `<img src="${esc(v.thumb)}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), '')}
+          ${v.thumb ? `<img src="${esc(v.thumb)}" data-poster="${posterURL(v.title, hueFor(v.id))}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), '')}
           <div class="t-title">${esc(v.title)}</div>
           <div class="t-artist">${esc(v.channel)}${v.dur ? ' • ' + fmt(v.dur) : ''}</div>
         </button>`).join('') + `</div>`;
@@ -881,7 +890,7 @@ async function renderHome() {
       <div class="trend-row">` +
       recs.map(v => `
         <button class="trend-card" data-vid="${v.id}" data-title="${esc(v.title || 'YouTube video')}" data-channel="${esc(v.channel || '')}">
-          ${v.thumb ? `<img src="${esc(v.thumb)}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), '')}
+          ${v.thumb ? `<img src="${esc(v.thumb)}" data-poster="${posterURL(v.title, hueFor(v.id))}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), '')}
           <div class="t-title">${esc(v.title || 'YouTube video')}</div>
           <div class="t-artist">${esc(v.channel || '')}</div>
         </button>`).join('') + `</div>`;
@@ -985,7 +994,7 @@ async function renderSearch(q) {
           <div id="uni-yt-player"></div><div class="yt-list">` +
           items.map(v => `
             <div class="yt-item" data-vid="${esc(v.id)}" data-title="${esc(v.title || 'YouTube video')}" data-channel="${esc(v.channel || '')}">
-              ${v.thumb ? `<img class="yt-thumb" src="${esc(v.thumb)}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), 'yt-thumb')}
+              ${v.thumb ? `<img class="yt-thumb" src="${esc(v.thumb)}" data-poster="${posterURL(v.title, hueFor(v.id))}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), 'yt-thumb')}
               <div class="yt-meta"><div class="t-title">${esc(v.title || 'YouTube video')}</div><div class="t-artist">${esc(v.channel || '')}</div></div>
             </div>`).join('') + `</div></div>`;
         ytBox.querySelectorAll('.yt-item').forEach(el => el.addEventListener('click', () =>
@@ -1814,7 +1823,7 @@ async function renderSpPlaylists() {
     const hue = hashHue(p.id || p.name);
     return `
     <button class="card" data-sppl="${p.id}">
-      ${p.images?.[0]?.url ? `<img class="c-cover" src="${p.images[0].url}" alt="">` : `<div class="c-cover" style="background:linear-gradient(135deg,hsl(${hue},70%,45%),hsl(${(hue + 50) % 360},75%,28%))"></div>`}
+      ${p.images?.[0]?.url ? `<img class="c-cover" src="${p.images[0].url}" data-poster="${posterURL(p.name, hueFor(p.id))}" alt="">` : `<div class="c-cover" style="background:linear-gradient(135deg,hsl(${hue},70%,45%),hsl(${(hue + 50) % 360},75%,28%))"></div>`}
       <div class="c-title">${esc(p.name)}</div><div class="c-sub">${p.tracks.total} songs</div>
     </button>`;
   }).join('') + `</div>` : `<div class="empty">No playlists found on your Spotify account.</div>`;
@@ -1832,7 +1841,7 @@ async function renderSpPlaylistDetail(id) {
   $('#sp-content').innerHTML = `
     <button class="ghost-btn" id="sp-back">← Back to playlists</button>
     <div class="pl-header">
-      ${img ? `<img class="pl-big-cover" src="${img}" alt="">` : posterImg(data.name || name, hueFor(data.name || name), 'pl-big-cover')}
+      ${img ? `<img class="pl-big-cover" src="${img}" data-poster="${posterURL(data.name || name, hueFor(data.name || name))}" alt="">` : posterImg(data.name || name, hueFor(data.name || name), 'pl-big-cover')}
       <div><div class="pl-type">Spotify Playlist</div>
         <div class="pl-title-big">${esc(data.name)}</div>
         <div class="pl-meta">${esc((data.description || '').replace(/<[^>]*>/g, ''))} • ${tracks.length} songs</div></div>
@@ -1953,12 +1962,12 @@ async function doSpSearch() {
       html += `<div class="section-title">Albums & Playlists</div><div class="card-grid">`;
       html += albums.map(a => `
         <button class="card" data-spalb="${a.id}" data-spimg="${a.images?.[0]?.url || ''}">
-          ${a.images?.[0]?.url ? `<img class="c-cover" src="${a.images[0].url}" alt="">` : posterImg(a.name, hueFor(a.name), 'c-cover')}
+          ${a.images?.[0]?.url ? `<img class="c-cover" src="${a.images[0].url}" data-poster="${posterURL(a.name, hueFor(a.name))}" alt="">` : posterImg(a.name, hueFor(a.name), 'c-cover')}
           <div class="c-title">${esc(a.name)}</div><div class="c-sub">Album • ${esc((a.artists || []).map(x => x.name).join(', '))}</div>
         </button>`).join('');
       html += pls.map(p => `
         <button class="card" data-sppl="${p.id}">
-          ${p.images?.[0]?.url ? `<img class="c-cover" src="${p.images[0].url}" alt="">` : posterImg(p.name, hueFor(p.name), 'c-cover')}
+          ${p.images?.[0]?.url ? `<img class="c-cover" src="${p.images[0].url}" data-poster="${posterURL(p.name, hueFor(p.id))}" alt="">` : posterImg(p.name, hueFor(p.name), 'c-cover')}
           <div class="c-title">${esc(p.name)}</div><div class="c-sub">Playlist</div>
         </button>`).join('');
       html += `</div>`;
@@ -1981,7 +1990,7 @@ async function renderSpAlbum(id, img, name) {
   $('#sp-content').innerHTML = `
     <button class="ghost-btn" id="sp-back">← Back to search</button>
     <div class="pl-header">
-      ${img ? `<img class="pl-big-cover" src="${img}" alt="">` : posterImg(data.name || name, hueFor(data.name || name), 'pl-big-cover')}
+      ${img ? `<img class="pl-big-cover" src="${img}" data-poster="${posterURL(data.name || name, hueFor(data.name || name))}" alt="">` : posterImg(data.name || name, hueFor(data.name || name), 'pl-big-cover')}
       <div><div class="pl-type">Spotify Album</div>
         <div class="pl-title-big">${esc(data.name || name)}</div>
         <div class="pl-meta">${esc((data.artists || []).map(a => a.name).join(', '))} • ${tracks.length} songs</div></div>
