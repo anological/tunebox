@@ -1620,7 +1620,7 @@ function disarmYtStall() {
    (t.duration) or learn from the first stable reading. One click toggles it;
    the choice persists in localStorage. */
 let adSilVideo = null, adSilMuted = false, adSilUserMuted = false,
-    adSilLearned = 0, adSilExpected = 0, adSilT0 = 0, adSilSeekTried = false,
+    adSilLearned = 0, adSilExpected = 0, adSilT0 = 0,
     adSilPlayer = null; // the YT.Player instance currently guarded (audio-mode or tab player)
 const adSilencerOn = () => { try { return localStorage.getItem('tunebox_adsil') !== '0'; } catch (e) { return true; } };
 function adSilencerSet(on) { try { localStorage.setItem('tunebox_adsil', on ? '1' : '0'); } catch (e) {} }
@@ -1630,7 +1630,7 @@ function armAdSilencer(t, player) {
   disarmAdSilencer();
   adSilPlayer = player || ytPlayer || null;
   adSilVideo = (t && (t.ytId || t.id)) || 'yt';
-  adSilLearned = 0; adSilT0 = Date.now(); adSilSeekTried = false;
+  adSilLearned = 0; adSilT0 = Date.now();
   adSilExpected = (t && t.duration) || 0; // seconds, when the track metadata has it
 }
 function disarmAdSilencer() {
@@ -1655,11 +1655,11 @@ function adSilencerTick(dur, player) {
     document.body.classList.add('ad-silenced');
     syncMuteIcon();
   }
-  if (ad && adSilMuted && !adSilSeekTried && dur > 0) {
-    // Best-effort: ask the player to jump past the ad. YouTube usually refuses
-    // seeks inside ads (the mute above is the real fallback); when it doesn't,
-    // the ad is gone instead of just silent.
-    adSilSeekTried = true;
+  if (ad && adSilMuted && dur > 0) {
+    // Aggressive auto-skip: keep asking the player to jump past the ad on every
+    // tick while it's detected. YouTube usually refuses seeks inside ads (the
+    // mute above is the guaranteed fallback), but retrying catches the moments
+    // it doesn't — that's the closest the official API gets to auto-skip.
     try { player.seekTo(dur, true); } catch (e) {}
   }
   if (!ad && adSilMuted) {
