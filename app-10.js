@@ -1651,7 +1651,7 @@ function adSilencerTick(dur, player) {
   }
   if (ad && !adSilMuted) {
     try { adSilUserMuted = player.isMuted(); player.mute(); } catch (e) {}
-    adSilMuted = true; adSilSeekTried = false;
+    adSilMuted = true;
     document.body.classList.add('ad-silenced');
     syncMuteIcon();
   }
