@@ -2317,13 +2317,16 @@ function renderFreeYouTube() {
       </div>
       <p class="yt-hint">Only needed if you deploy your own backend. The API key always stays on the server, never in this page.</p>
     </details>
-    <div class="uni-hint" style="margin:14px 0 4px">Tip: use the search bar at the top — it searches YouTube, Spotify, Audius and the Archive all at once.</div>
+    <div class="yt-keyrow" style="margin:14px 0 10px;max-width:520px">
+      <input id="yt-search" class="sp-input" placeholder="Search YouTube — songs, artists…" autocomplete="off">
+      <button id="yt-search-go" class="ghost-btn">Search</button>
+    </div>
     <div class="yt-keyrow" style="margin-bottom:16px;max-width:520px">
       <input id="yt-link" class="sp-input" placeholder="Or paste a YouTube link / video ID…" autocomplete="off">
       <button id="yt-link-play" class="ghost-btn">Play</button>
     </div>
     <div id="yt-player"></div>
-    <div id="yt-content"><div class="empty">Paste a YouTube link above to play it right away.</div></div>`;
+    <div id="yt-content"><div class="empty">Search above, or paste a YouTube link to play it right away.</div></div>`;
 
   $('#be-save').addEventListener('click', () => { backendSave($('#be-url').value); renderFree(); });
   $('#adsil-toggle').addEventListener('click', () => { adSilencerSet(!adSilencerOn()); renderFree(); });
@@ -2341,6 +2344,29 @@ function renderFreeYouTube() {
   };
   $('#yt-link-play').addEventListener('click', playLink);
   $('#yt-link').addEventListener('keydown', e => { if (e.key === 'Enter') playLink(); });
+
+  const ytSearch = async () => {
+    const q = $('#yt-search').value.trim();
+    if (!q) return;
+    const box = $('#yt-content');
+    box.innerHTML = skelRow(4, 'YouTube');
+    try {
+      const res = await beFetch('/api/yt/search?' + new URLSearchParams({ q }));
+      const items = await res.json();
+      if (!items.length) { box.innerHTML = `<div class="empty">No results for &ldquo;${esc(q)}&rdquo;.</div>`; return; }
+      box.innerHTML = '<div class="yt-list">' + items.map(v => `
+        <div class="yt-item" data-vid="${esc(v.id)}" data-title="${esc(v.title || 'YouTube video')}" data-channel="${esc(v.channel || '')}">
+          ${v.thumb ? `<img class="yt-thumb" src="${esc(v.thumb)}" data-poster="${posterURL(v.title, hueFor(v.id))}" alt="" loading="lazy">` : posterImg(v.title, hueFor(v.id), 'yt-thumb')}
+          <div class="yt-meta"><div class="t-title">${esc(v.title || 'YouTube video')}</div><div class="t-artist">${esc(v.channel || '')}</div></div>
+        </div>`).join('') + '</div>';
+      box.querySelectorAll('.yt-item').forEach(el => el.addEventListener('click', () =>
+        ytShowPlayer(el.dataset.vid, el.dataset.title, el.dataset.channel)));
+    } catch (e) {
+      box.innerHTML = '<div class="sp-notice err">Search failed — check your connection and try again.</div>';
+    }
+  };
+  $('#yt-search-go').addEventListener('click', ytSearch);
+  $('#yt-search').addEventListener('keydown', e => { if (e.key === 'Enter') ytSearch(); });
 
   if (ytPendingPlay) {
     const p = ytPendingPlay; ytPendingPlay = null;
