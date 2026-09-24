@@ -518,6 +518,16 @@ function syncPlayerUI() {
   if (row) row.classList.add('playing');
   renderQueue();
   document.title = `${t.title} • ${t.artist} — Tunebox`;
+  try {
+    if ('mediaSession' in navigator) {
+      const art = [];
+      if (t.image) { try { art.push({ src: new URL(t.image, location.href).href, sizes: '512x512', type: 'image/jpeg' }); } catch (e) {} }
+      art.push({ src: poster, sizes: '512x512' });
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t.title || 'Tunebox', artist: t.artist || '', album: t.album || '', artwork: art
+      });
+    }
+  } catch (e) { /* not supported */ }
 }
 
 /* ---------------- Likes & playlists ---------------- */
@@ -1149,6 +1159,18 @@ async function init() {
   $('#play').addEventListener('click', togglePlay);
   $('#next').addEventListener('click', () => step(1));
   $('#prev').addEventListener('click', () => step(-1));
+  /* Media Session: lock-screen / notification controls on phones, plus track
+     info for the OS. Direct audio (demo tracks, uploads, Archive/Audius) keeps
+     playing when the browser is minimized; YouTube embeds get suspended by the
+     OS in background — a platform limit no website can work around. */
+  try {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.setActionHandler('play', () => togglePlay());
+      navigator.mediaSession.setActionHandler('pause', () => togglePlay());
+      navigator.mediaSession.setActionHandler('previoustrack', () => step(-1));
+      navigator.mediaSession.setActionHandler('nexttrack', () => step(1));
+    }
+  } catch (e) { /* not supported */ }
   $('#shuffle').addEventListener('click', e => { shuffle = !shuffle; e.currentTarget.classList.toggle('on', shuffle); });
   $('#repeat').addEventListener('click', e => {
     repeatMode = repeatMode === 'off' ? 'all' : repeatMode === 'all' ? 'one' : 'off';
@@ -1598,34 +1620,37 @@ function disarmYtStall() {
    (t.duration) or learn from the first stable reading. One click toggles it;
    the choice persists in localStorage. */
 let adSilVideo = null, adSilMuted = false, adSilUserMuted = false,
-    adSilLearned = 0, adSilExpected = 0, adSilT0 = 0, adSilSeekTried = false;
+    adSilLearned = 0, adSilExpected = 0, adSilT0 = 0, adSilSeekTried = false,
+    adSilPlayer = null; // the YT.Player instance currently guarded (audio-mode or tab player)
 const adSilencerOn = () => { try { return localStorage.getItem('tunebox_adsil') !== '0'; } catch (e) { return true; } };
 function adSilencerSet(on) { try { localStorage.setItem('tunebox_adsil', on ? '1' : '0'); } catch (e) {} }
 function syncMuteIcon() { try { if (ytPlayer) $('#mute').innerHTML = ytPlayer.isMuted() ? '&#128263;' : '&#128266;'; } catch (e) {} }
 
-function armAdSilencer(t) {
+function armAdSilencer(t, player) {
   disarmAdSilencer();
+  adSilPlayer = player || ytPlayer || null;
   adSilVideo = (t && (t.ytId || t.id)) || 'yt';
   adSilLearned = 0; adSilT0 = Date.now(); adSilSeekTried = false;
   adSilExpected = (t && t.duration) || 0; // seconds, when the track metadata has it
 }
 function disarmAdSilencer() {
-  if (adSilMuted && ytPlayer) { try { if (!adSilUserMuted) ytPlayer.unMute(); } catch (e) {} }
-  adSilMuted = false; adSilVideo = null;
+  if (adSilMuted && adSilPlayer) { try { if (!adSilUserMuted) adSilPlayer.unMute(); } catch (e) {} }
+  adSilMuted = false; adSilVideo = null; adSilPlayer = null;
   document.body.classList.remove('ad-silenced');
 }
-function adSilencerTick(dur) {
-  if (!ytMode || !ytPlayer) return;
+function adSilencerTick(dur, player) {
+  player = player || adSilPlayer || ytPlayer;
+  if (!player) return;
   if (!adSilencerOn()) { if (adSilMuted) disarmAdSilencer(); return; }
   if (dur > adSilLearned) adSilLearned = dur;
   const ref = adSilExpected > 45 ? adSilExpected : adSilLearned;
   let ad = false;
   if (ref > 45 && dur > 0 && dur < ref * 0.6) ad = true; // ad reporting its own (short) length
   else if (ref > 45 && dur === 0 && (Date.now() - adSilT0) > 4000) { // pre-roll: no usable duration yet
-    try { const st = ytPlayer.getPlayerState(); if (st === 1 || st === 3) ad = true; } catch (e) {}
+    try { const st = player.getPlayerState(); if (st === 1 || st === 3) ad = true; } catch (e) {}
   }
   if (ad && !adSilMuted) {
-    try { adSilUserMuted = ytPlayer.isMuted(); ytPlayer.mute(); } catch (e) {}
+    try { adSilUserMuted = player.isMuted(); player.mute(); } catch (e) {}
     adSilMuted = true; adSilSeekTried = false;
     document.body.classList.add('ad-silenced');
     syncMuteIcon();
@@ -1635,11 +1660,11 @@ function adSilencerTick(dur) {
     // seeks inside ads (the mute above is the real fallback); when it doesn't,
     // the ad is gone instead of just silent.
     adSilSeekTried = true;
-    try { ytPlayer.seekTo(dur, true); } catch (e) {}
+    try { player.seekTo(dur, true); } catch (e) {}
   }
   if (!ad && adSilMuted) {
     adSilMuted = false;
-    try { if (!adSilUserMuted) ytPlayer.unMute(); } catch (e) {}
+    try { if (!adSilUserMuted) player.unMute(); } catch (e) {}
     document.body.classList.remove('ad-silenced');
     syncMuteIcon();
   }
@@ -2394,18 +2419,42 @@ function renderFreeYouTube() {
   })();
 }
 
+/* YouTube tab video player. The iframe gets enablejsapi=1 so the Ad Silencer
+   can guard it just like the background-audio player. */
+let ytTabPlayer = null, ytTabTickTimer = null;
+function stopYtTab() {
+  clearInterval(ytTabTickTimer); ytTabTickTimer = null;
+  try { if (ytTabPlayer && ytTabPlayer.pauseVideo) ytTabPlayer.pauseVideo(); } catch (e) {}
+  ytTabPlayer = null;
+}
 function ytShowPlayer(id, title, channel, target) {
   stopYt(); // don't double-play if a Spotify track was streaming via the hidden YouTube audio player
+  stopYtTab();
   const host = document.getElementById(target || 'yt-player');
   if (!host) return;
   host.innerHTML = `
     <div class="yt-player-wrap">
-      <iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0" title="${esc(title)}"
+      <iframe id="yt-tab-frame" src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&enablejsapi=1" title="${esc(title)}"
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
         allowfullscreen></iframe>
     </div>
     <div class="yt-now"><div class="t-title">${esc(title)}</div><div class="t-artist">${esc(channel)}</div></div>`;
   document.querySelectorAll('.yt-item').forEach(el => el.classList.toggle('playing', el.dataset.vid === id));
+  // Hook the Ad Silencer to this player (API access needs enablejsapi=1 above)
+  ensureYtApi().then(() => {
+    try {
+      ytTabPlayer = new YT.Player('yt-tab-frame');
+      armAdSilencer({ id }, ytTabPlayer);
+      clearInterval(ytTabTickTimer);
+      ytTabTickTimer = setInterval(() => {
+        if (!document.getElementById('yt-tab-frame')) { // player was removed from the page
+          clearInterval(ytTabTickTimer); ytTabTickTimer = null;
+          disarmAdSilencer(); ytTabPlayer = null; return;
+        }
+        try { adSilencerTick(ytTabPlayer.getDuration() || 0, ytTabPlayer); } catch (e) { /* transient */ }
+      }, 500);
+    } catch (e) { /* API blocked — video still plays, just without ad silencing */ }
+  }).catch(() => {});
 }
 
 /* Trending music videos via the Tunebox backend (cached server-side 1h, ~1 API unit) */
