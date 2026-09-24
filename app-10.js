@@ -985,8 +985,7 @@ async function renderSearch(q) {
     await new Promise(r => setTimeout(r, 500));
     if (!alive()) return;
     try {
-      const res = await fetch(be + '/api/yt/search?' + new URLSearchParams({ q: query }));
-      if (!res.ok) throw new Error('Backend error ' + res.status);
+      const res = await beFetch('/api/yt/search?' + new URLSearchParams({ q: query }));
       const items = await res.json();
       if (!alive()) return;
       if (items.length) {
@@ -1670,8 +1669,7 @@ async function playSpotifyViaYouTube(t) {
   try {
     let vid = ytVideoCache[t.id];
     if (!vid) {
-      const res = await fetch(backendUrl() + '/api/yt/search?' + new URLSearchParams({ q: `${t.title} ${t.artist} audio` }));
-      if (!res.ok) throw new Error('music search is unreachable right now');
+      const res = await beFetch('/api/yt/search?' + new URLSearchParams({ q: `${t.title} ${t.artist} audio` }));
       const items = await res.json();
       if (!items.length) throw new Error('no match found on YouTube');
       vid = items[0].id;
@@ -2257,6 +2255,26 @@ function backendCustom() {
 function backendSave(u) {
   try { localStorage.setItem(BE_LS, String(u || '').trim().replace(/\/+$/, '')); } catch (e) { /* storage unavailable */ }
 }
+/* Backend fetch with automatic fallback. If a saved custom backend URL is dead
+   (DNS failure, timeout, or HTTP error), the same request is retried against the
+   built-in backend and the dead custom URL is dropped — so a wrong saved address
+   can never silently break YouTube search, trending, or recommendations. */
+async function beFetch(path, opts = {}) {
+  const custom = backendCustom();
+  const bases = (custom && custom !== BE_DEFAULT) ? [custom, BE_DEFAULT] : [BE_DEFAULT];
+  let lastErr = null;
+  for (const base of bases) {
+    try {
+      const res = await fetch(base + path, opts);
+      if (res.ok) {
+        if (base === BE_DEFAULT && custom) { try { localStorage.removeItem(BE_LS); } catch (e) { /* ignore */ } }
+        return res;
+      }
+      lastErr = new Error('Backend error ' + res.status);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('Backend unreachable');
+}
 /* Self-healing: if a saved custom backend URL is dead, drop it and fall back
    to the built-in backend instead of silently breaking YouTube features. */
 async function ensureBackend() {
@@ -2338,9 +2356,8 @@ function renderFreeYouTube() {
     try {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 6000);
-      const res = await fetch(be + '/api/yt/trending', { signal: ctl.signal });
+      const res = await beFetch('/api/yt/trending', { signal: ctl.signal });
       clearTimeout(t);
-      if (!res.ok) throw new Error('bad status');
       el.innerHTML = '<span class="dot"></span>Connected — search and trending are on';
     } catch (e) {
       el.innerHTML = '<span class="dot" style="background:#f85149;box-shadow:0 0 12px #f85149"></span>' +
@@ -2371,8 +2388,7 @@ async function ytTrending() {
   if (ytTrendCache) return ytTrendCache;
   const be = backendUrl();
   if (!be) return [];
-  const res = await fetch(be + '/api/yt/trending');
-  if (!res.ok) throw new Error('Backend error ' + res.status);
+  const res = await beFetch('/api/yt/trending');
   ytTrendCache = await res.json();
   return ytTrendCache;
 }
@@ -2403,8 +2419,7 @@ async function ytRecommendations() {
   const seen = new Set(), out = [];
   for (const q of queries) {
     try {
-      const res = await fetch(be + '/api/yt/search?' + new URLSearchParams({ q }));
-      if (!res.ok) continue;
+      const res = await beFetch('/api/yt/search?' + new URLSearchParams({ q }));
       const items = await res.json();
       for (const v of items) {
         if (!v || !v.id || seen.has(v.id)) continue;
