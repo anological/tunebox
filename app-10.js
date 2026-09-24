@@ -770,7 +770,7 @@ function renderAlbum(id) {
     </div>
     <div class="section-title">Tracks</div>
     ${trackTable(ids)}
-    <div class="sp-note" style="margin-top:14px">Plays free via YouTube audio · a short ad may play first.</div>`;
+    <div class="sp-note" style="margin-top:14px">Plays free via YouTube audio · Ad Silencer auto-mutes any ads.</div>`;
   $('#album-play').addEventListener('click', () => playAlbum(a, 0));
   bindTrackRows(ids);
 }
@@ -1171,6 +1171,7 @@ async function init() {
     if (ytMode && ytPlayer) {
       const m = ytPlayer.isMuted();
       m ? ytPlayer.unMute() : ytPlayer.mute();
+      if (typeof adSilMuted !== 'undefined' && adSilMuted) adSilUserMuted = !m; // respect manual mute during a silenced ad
       $('#mute').innerHTML = m ? '&#128266;' : '&#128263;';
     }
     else if (currentIsSpotify() && spPlayer) {
@@ -1525,6 +1526,7 @@ function replayCurrentYt() {
 function stopYt() {
   ytMode = false; ytPlaying = false;
   disarmYtStall();
+  disarmAdSilencer();
   clearInterval(ytTickTimer); ytTickTimer = null;
   try { if (ytPlayer && ytPlayer.pauseVideo) ytPlayer.pauseVideo(); } catch (e) {}
 }
@@ -1533,6 +1535,7 @@ function updateYtProgress() {
   if (!ytMode || !ytPlayer) return;
   try {
     const pos = ytPlayer.getCurrentTime() || 0, dur = ytPlayer.getDuration() || 0;
+    adSilencerTick(dur);
     if (dur > 0) { // main video (not an ad) — trust the numbers
       if (pos > 0.5) disarmYtStall();
       $('#t-cur').textContent = fmt(pos);
@@ -1577,6 +1580,63 @@ function disarmYtStall() {
   if (ytPromptShown) { ytPromptShown = false; toast(); }
 }
 
+/* ---------------- Ad Silencer: one-click YouTube ad muting ----------------
+   YouTube serves ads inside its own embedded player, which a website cannot
+   block or skip (cross-origin iframe — the browser deliberately withholds
+   those powers from pages). But Tunebox plays audio-only, so muting an ad is
+   equivalent to removing it: the ad still plays, you just don't hear it.
+   Detection: during ads getDuration() reports the ad's own length (or 0 for
+   pre-rolls) instead of the song's length, which we know from track metadata
+   (t.duration) or learn from the first stable reading. One click toggles it;
+   the choice persists in localStorage. */
+let adSilVideo = null, adSilMuted = false, adSilUserMuted = false,
+    adSilLearned = 0, adSilExpected = 0, adSilT0 = 0, adSilSeekTried = false;
+const adSilencerOn = () => { try { return localStorage.getItem('tunebox_adsil') !== '0'; } catch (e) { return true; } };
+function adSilencerSet(on) { try { localStorage.setItem('tunebox_adsil', on ? '1' : '0'); } catch (e) {} }
+function syncMuteIcon() { try { if (ytPlayer) $('#mute').innerHTML = ytPlayer.isMuted() ? '&#128263;' : '&#128266;'; } catch (e) {} }
+
+function armAdSilencer(t) {
+  disarmAdSilencer();
+  adSilVideo = (t && (t.ytId || t.id)) || 'yt';
+  adSilLearned = 0; adSilT0 = Date.now(); adSilSeekTried = false;
+  adSilExpected = (t && t.duration) || 0; // seconds, when the track metadata has it
+}
+function disarmAdSilencer() {
+  if (adSilMuted && ytPlayer) { try { if (!adSilUserMuted) ytPlayer.unMute(); } catch (e) {} }
+  adSilMuted = false; adSilVideo = null;
+  document.body.classList.remove('ad-silenced');
+}
+function adSilencerTick(dur) {
+  if (!ytMode || !ytPlayer) return;
+  if (!adSilencerOn()) { if (adSilMuted) disarmAdSilencer(); return; }
+  if (dur > adSilLearned) adSilLearned = dur;
+  const ref = adSilExpected > 45 ? adSilExpected : adSilLearned;
+  let ad = false;
+  if (ref > 45 && dur > 0 && dur < ref * 0.6) ad = true; // ad reporting its own (short) length
+  else if (ref > 45 && dur === 0 && (Date.now() - adSilT0) > 4000) { // pre-roll: no usable duration yet
+    try { const st = ytPlayer.getPlayerState(); if (st === 1 || st === 3) ad = true; } catch (e) {}
+  }
+  if (ad && !adSilMuted) {
+    try { adSilUserMuted = ytPlayer.isMuted(); ytPlayer.mute(); } catch (e) {}
+    adSilMuted = true; adSilSeekTried = false;
+    document.body.classList.add('ad-silenced');
+    syncMuteIcon();
+  }
+  if (ad && adSilMuted && !adSilSeekTried && dur > 0) {
+    // Best-effort: ask the player to jump past the ad. YouTube usually refuses
+    // seeks inside ads (the mute above is the real fallback); when it doesn't,
+    // the ad is gone instead of just silent.
+    adSilSeekTried = true;
+    try { ytPlayer.seekTo(dur, true); } catch (e) {}
+  }
+  if (!ad && adSilMuted) {
+    adSilMuted = false;
+    try { if (!adSilUserMuted) ytPlayer.unMute(); } catch (e) {}
+    document.body.classList.remove('ad-silenced');
+    syncMuteIcon();
+  }
+}
+
 async function playYtAudioTrack(t, vid) {
   ytMode = true; ytStalled = false;
   if (spPlayer && spPlaying) spPlayer.pause().catch(() => {});
@@ -1588,6 +1648,7 @@ async function playYtAudioTrack(t, vid) {
     clearInterval(ytTickTimer);
     ytTickTimer = setInterval(updateYtProgress, 500);
     armYtStallWatchdog();
+    armAdSilencer(t);
   } catch (e) {
     ytMode = false;
     clearInterval(ytTickTimer); ytTickTimer = null;
@@ -2215,6 +2276,10 @@ function renderFreeYouTube() {
   const customBe = backendCustom();
   $('#free-body').innerHTML = `
     <p class="sp-note">Plays through YouTube's official player — artists keep their revenue.</p>
+    <div class="adsil-row">
+      <div><div class="adsil-title">🔇 Ad Silencer</div><div class="adsil-sub">Auto-mutes YouTube ads while your music plays. One click to switch off.</div></div>
+      <button id="adsil-toggle" class="ghost-btn ${adSilencerOn() ? 'on' : ''}">${adSilencerOn() ? 'On' : 'Off'}</button>
+    </div>
     <div class="yt-status" id="yt-be-status"><span class="dot"></span>Checking backend…</div>
     <details class="adv">
       <summary>Advanced</summary>
@@ -2234,6 +2299,7 @@ function renderFreeYouTube() {
     <div id="yt-content"><div class="empty">Paste a YouTube link above to play it right away.</div></div>`;
 
   $('#be-save').addEventListener('click', () => { backendSave($('#be-url').value); renderFree(); });
+  $('#adsil-toggle').addEventListener('click', () => { adSilencerSet(!adSilencerOn()); renderFree(); });
   const bc = $('#be-clear');
   if (bc) bc.addEventListener('click', () => { backendSave(''); renderFree(); });
 
